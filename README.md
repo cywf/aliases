@@ -1,7 +1,4 @@
-# Aliases
-
-
-# Custom user aliases...so I don't have to do this every single time... 
+# My on-the-go toolkit 
 
 ## System Administration
 
@@ -21,6 +18,7 @@ alias srcbash="source ~/.bashrc"
 alias srczsh="source ~/.zshrc"
 alias srcprofile="source ~/.profile"
 alias srcaliases="source ~/.aliases"
+alias ebash="nano ~/.bash_aliases"
 alias editbash="nano ~/.bashrc"
 alias editzsh="nano ~/.zshrc"
 alias editprofile="nano ~/.profile"
@@ -78,3 +76,13 @@ alias tmn="tmux new -s"
 alias tma="tmux attach -t"
 alias tmd="tmux detach"
 alias tmk="tmux kill-session -t"
+
+## ZeroTier
+
+alias zerotier-cli="sudo zerotier-cli"
+alias zt="sudo zerotier-cli"
+alias zti="sudo zerotier-cli info"
+alias ztj="sudo zerotier-cli join"
+alias ztp="sudo zerotier-cli peers"
+alias ztlp="sudo zerotier-cli listpeers"
+alias ztln="sudo zerotier-cli listnetworks"
