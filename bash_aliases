@@ -86,3 +86,7 @@ alias zts="sudo zerotier-cli status"
 alias ztq="sudo zerotier-cli leave"
 alias ztqr="sudo zerotier-cli leave -r"
 alias zerotier-cli="sudo zerotier-cli"
+
+## AI Stuff
+
+alias automode=""
