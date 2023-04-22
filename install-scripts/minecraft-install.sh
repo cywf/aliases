@@ -47,3 +47,9 @@ docker-compose up -d
 zerotier-cli join ${ZEROTIER_NETWORK_ID}
 
 echo "Minecraft server setup complete. Connect using the ZeroTier IP address and port 25565."
+
+# Run the script 
+
+chmod +x setup_minecraft_server.sh
+./setup_minecraft_server.sh
+
