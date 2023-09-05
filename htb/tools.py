@@ -16,7 +16,7 @@ def install_tools(base_dir):
     repos = [
         "https://github.com/carlospolop/PEASS-ng",
         "https://github.com/danielmiessler/SecLists",
-        "https://github.com/cywf/aliases"
+        "https://github.com/cywf/aliases",
     ]
     
     for repo in repos:
@@ -25,20 +25,28 @@ def install_tools(base_dir):
 def initial_nmap_scan(machine_ip, base_dir):
     """Run an initial Nmap scan to determine open ports."""
     nmap_dir = os.path.join(base_dir, "nmap")
+    if not os.path.exists(nmap_dir):
+        os.makedirs(nmap_dir)
     output_file = os.path.join(nmap_dir, "initial_scan.txt")
     
-    # Run the Nmap scan
-    subprocess.run(["nmap", "-sC", "-sV", "-oN", output_file, machine_ip])
-
-    # Parse the results to determine the machine type (if not provided)
     machine_type = "Unknown"
-    with open(output_file, "r") as file:
-        for line in file:
-            if "Windows" in line:
-                machine_type = "Windows"
-                break
-            elif "Linux" in line:
-                machine_type = "Linux"
+    while machine_type == "Unknown":
+        # Run the Nmap scan
+        subprocess.run(["nmap", "-sC", "-sV", "-oN", output_file, machine_ip])
+
+        # Parse the results to determine the machine type (if not provided)
+        with open(output_file, "r") as file:
+            for line in file:
+                if "Windows" in line:
+                    machine_type = "Windows"
+                    break
+                elif "Linux" in line:
+                    machine_type = "Linux"
+                    break
+
+        if machine_type == "Unknown":
+            choice = input("Machine type could not be determined. Would you like to scan again? (y/n): ")
+            if choice.lower() != 'y':
                 break
 
     return machine_type

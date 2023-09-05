@@ -13,13 +13,15 @@
 # - Each major step is now wrapped in a try and except block. If an error occurs, it's logged, and the script continues to the next step. After each step, a loading bar is displayed to indicate progress.
 
 import time
+from datetime import datetime
 
 # ... [Previous functions]
 
 def log_error(error, step, log_file="error_log.txt"):
     """Log the error to a file."""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     with open(log_file, "a") as file:
-        file.write(f"Error during {step}: {error}\n")
+        file.write(f"{timestamp} - Error during {step}: {error}\n")
 
 def loading_bar(duration=5, message="Processing"):
     """Display an ASCII loading bar."""
@@ -30,6 +32,7 @@ def loading_bar(duration=5, message="Processing"):
 
 # Update the main function
 def main():
+    error_count = 0
     handle, machine_name, machine_ip, machine_type = get_user_input()
     base_dir = setup_directory_structure(machine_name)
     loading_bar(message="Setting up directory structure")
@@ -39,6 +42,7 @@ def main():
         loading_bar(message="Installing tools")
     except Exception as e:
         log_error(e, "install_tools")
+        error_count += 1
 
     if not machine_type:
         try:
@@ -46,6 +50,7 @@ def main():
             loading_bar(message="Running initial Nmap scan")
         except Exception as e:
             log_error(e, "initial_nmap_scan")
+            error_count += 1
     else:
         print(f"Machine type provided as: {machine_type}")
 
@@ -54,14 +59,20 @@ def main():
         loading_bar(message="Running advanced Nmap scan")
     except Exception as e:
         log_error(e, "advanced_nmap_scan")
+        error_count += 1
 
     try:
         generate_payloads(machine_ip, machine_type, base_dir)
         loading_bar(message="Generating payloads")
     except Exception as e:
         log_error(e, "generate_payloads")
+        error_count += 1
 
-    print("\nAll tasks completed! Check error_log.txt for any errors.")
+    print("\nAll tasks completed!")
+    if error_count:
+        print(f"{error_count} errors occurred. Check error_log.txt for details.")
+    else:
+        print("No errors occurred.")
 
 if __name__ == "__main__":
     main()
