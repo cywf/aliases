@@ -1,36 +1,57 @@
 #!/bin/bash
 
-# Ensure the script is run as root
-if [ "$EUID" -ne 0 ]
-  then echo "Please run as root"
-  exit
-fi
+# Lock down SSH
+function secure_ssh {
+    echo "Securing SSH..."
+    local SSH_CONFIG_FILE="/etc/ssh/sshd_config"
 
-# Update and upgrade packages
-echo "Updating and upgrading system packages..."
-apt-get update && apt-get upgrade -y
+    # Change the SSH port
+    local SSH_PORT="YOUR_NEW_SSH_PORT" # Change this to your desired port
+    sed -i "s/#Port 22/Port $SSH_PORT/" $SSH_CONFIG_FILE
 
-# SSH Configuration
-echo "Configuring SSH..."
+    # Disable root login over SSH
+    sed -i "s/PermitRootLogin yes/PermitRootLogin no/" $SSH_CONFIG_FILE
 
-# Generate a random port number between 2000 and 65535 for SSH
-RANDOM_PORT=$((RANDOM + 2000))
+    # Disable SSH password authentication
+    sed -i "s/#PasswordAuthentication yes/PasswordAuthentication no/" $SSH_CONFIG_FILE
 
-# Backup the existing sshd_config file
-cp /etc/ssh/sshd_config /etc/ssh/sshd_config.backup
+    # Restart SSH service
+    systemctl restart sshd
+}
 
-# Change SSH port
-sed -i "s/#Port 22/Port $RANDOM_PORT/g" /etc/ssh/sshd_config
+# Update and upgrade the server
+function update_upgrade {
+    echo "Updating and upgrading server..."
+    apt-get update && apt-get upgrade -y
+}
 
-# Restrict SSH access to user 'skol' only
-echo "AllowUsers skol" >> /etc/ssh/sshd_config
+# Configure the UFW firewall
+function configure_ufw {
+    echo "Configuring UFW firewall..."
+    ufw allow $SSH_PORT/tcp # Allow your new SSH port
+    ufw enable
+}
 
-# Restart SSH service
-systemctl restart sshd
+# Install Zerotier, Docker, TMUX, and Git
+function install_packages {
+    echo "Installing Zerotier, Docker, TMUX, and Git..."
+    curl -s https://install.zerotier.com | sudo bash
+    apt-get install -y docker.io tmux git
+}
 
-# Security and Hardening
-echo "Applying security and hardening measures..."
+# Clone the aliases repository and copy .bash_aliases
+function setup_aliases {
+    echo "Setting up aliases..."
+    git clone https://github.com/cywf/aliases.git
+    cd aliases && cp bash_aliases ~/.bash_aliases
+    source ~/.bashrc
+}
 
-# Additional hardening commands can go here
+# Run the functions
+secure_ssh
+update_upgrade
+configure_ufw
+install_packages
+setup_aliases
 
-echo "Setup completed. SSH is now listening on port $RANDOM_PORT"
+echo "Server setup complete."
