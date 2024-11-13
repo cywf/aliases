@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Ensure the script is run as root
+if [ "$EUID" -ne 0 ]; then
+    echo "ERROR: This script must be run as root. Please use sudo or log in as root."
+    exit 1
+fi
+
 # Lock down SSH
 function secure_ssh {
     echo "Securing SSH..."
