@@ -6,16 +6,29 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# ASCII Loading Bar
+function loading_bar {
+    local message=$1
+    echo -n "$message"
+    for i in {1..10}; do
+        echo -n "."
+        sleep 0.1
+    done
+    echo " done."
+}
+
 # Check for required dependencies
 function check_dependencies {
-    echo "Checking for required tools..."
+    echo "Gathering required tools..."
     dependencies=(lsblk mkfs.ext4 dd curl)
     for dep in "${dependencies[@]}"; do
+        echo -n "Checking for $dep..."
         if ! command -v $dep &> /dev/null; then
-            echo "$dep is not installed. Installing..."
-            apt-get install -y $dep
+            echo " not found. Installing $dep."
+            apt-get install -y $dep > /dev/null 2>&1
+            loading_bar "Installing $dep"
         else
-            echo "$dep is already installed."
+            echo " found."
         fi
     done
 }
@@ -43,13 +56,15 @@ function extend_storage {
 
     # Format and mount the device
     echo "Formatting $DEVICE_PATH as ext4..."
-    mkfs.ext4 "$DEVICE_PATH"
+    mkfs.ext4 "$DEVICE_PATH" > /dev/null 2>&1
+    loading_bar "Formatting $DEVICE_PATH"
 
     # Mount the device
     MOUNT_POINT="/mnt/usb_storage"
     mkdir -p "$MOUNT_POINT"
     echo "Mounting $DEVICE_PATH at $MOUNT_POINT..."
-    mount "$DEVICE_PATH" "$MOUNT_POINT"
+    mount "$DEVICE_PATH" "$MOUNT_POINT" > /dev/null 2>&1
+    loading_bar "Mounting $DEVICE_PATH"
 
     echo "Storage has been extended. You can now use $MOUNT_POINT as additional storage."
 }
@@ -73,7 +88,8 @@ function write_ubuntu_image {
     UBUNTU_URL="https://releases.ubuntu.com/24.04.1/ubuntu-24.04.1-live-server-amd64.iso"
     ISO_FILE="/tmp/ubuntu-server-24.04.1.iso"
     echo "Downloading Ubuntu Server 24.04.1 LTS image..."
-    curl -L -o "$ISO_FILE" "$UBUNTU_URL"
+    curl -L -o "$ISO_FILE" "$UBUNTU_URL" > /dev/null 2>&1
+    loading_bar "Downloading Ubuntu Server image"
 
     if [ ! -f "$ISO_FILE" ]; then
         echo "ERROR: Failed to download Ubuntu Server image. Exiting."
@@ -83,6 +99,7 @@ function write_ubuntu_image {
     # Write the image to the USB device
     echo "Writing image to $DEVICE_PATH..."
     dd if="$ISO_FILE" of="$DEVICE_PATH" bs=4M status=progress && sync
+    loading_bar "Writing Ubuntu Server image"
 
     echo "Ubuntu Server image has been written to $DEVICE_PATH."
 }
