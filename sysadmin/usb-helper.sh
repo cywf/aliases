@@ -6,6 +6,28 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Global checkpoint tracker
+CHECKPOINT_FILE="/tmp/usb_helper_checkpoint"
+
+# Save progress to a checkpoint file
+function save_checkpoint {
+    echo "$1" > "$CHECKPOINT_FILE"
+}
+
+# Load checkpoint
+function load_checkpoint {
+    if [ -f "$CHECKPOINT_FILE" ]; then
+        cat "$CHECKPOINT_FILE"
+    else
+        echo "start"
+    fi
+}
+
+# Clear checkpoint
+function clear_checkpoint {
+    rm -f "$CHECKPOINT_FILE"
+}
+
 # ASCII Loading Bar
 function loading_bar {
     local message=$1
@@ -24,9 +46,19 @@ function check_dependencies {
     for dep in "${dependencies[@]}"; do
         echo -n "Checking for $dep..."
         if ! command -v $dep &> /dev/null; then
-            echo " not found. Installing $dep."
-            apt-get install -y $dep > /dev/null 2>&1
-            loading_bar "Installing $dep"
+            echo " not found."
+            read -p "Would you like to install $dep? (yes/no): " INSTALL_CHOICE
+            if [[ "$INSTALL_CHOICE" == "yes" ]]; then
+                apt-get install -y $dep
+                if [ $? -ne 0 ]; then
+                    echo "ERROR: Failed to install $dep. Please check your internet connection or package manager."
+                    exit 1
+                fi
+                loading_bar "Installing $dep"
+            else
+                echo "ERROR: $dep is required for this script. Exiting."
+                exit 1
+            fi
         else
             echo " found."
         fi
@@ -41,6 +73,7 @@ function list_usb_devices {
 
 # Option 1: Extend current storage
 function extend_storage {
+    save_checkpoint "extend_storage"
     echo "You selected to extend storage."
     list_usb_devices
 
@@ -57,6 +90,10 @@ function extend_storage {
     # Format and mount the device
     echo "Formatting $DEVICE_PATH as ext4..."
     mkfs.ext4 "$DEVICE_PATH" > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to format $DEVICE_PATH. Check the device and try again."
+        exit 1
+    fi
     loading_bar "Formatting $DEVICE_PATH"
 
     # Mount the device
@@ -64,13 +101,19 @@ function extend_storage {
     mkdir -p "$MOUNT_POINT"
     echo "Mounting $DEVICE_PATH at $MOUNT_POINT..."
     mount "$DEVICE_PATH" "$MOUNT_POINT" > /dev/null 2>&1
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to mount $DEVICE_PATH. Check the device and try again."
+        exit 1
+    fi
     loading_bar "Mounting $DEVICE_PATH"
 
     echo "Storage has been extended. You can now use $MOUNT_POINT as additional storage."
+    clear_checkpoint
 }
 
-# Option 2: Write Ubuntu Server image to USB
+# Option 2: Stream Ubuntu Server image directly to USB
 function write_ubuntu_image {
+    save_checkpoint "write_ubuntu_image"
     echo "You selected to write an Ubuntu Server image to USB."
     list_usb_devices
 
@@ -84,24 +127,29 @@ function write_ubuntu_image {
         exit 1
     fi
 
-    # Download Ubuntu Server image
-    UBUNTU_URL="https://releases.ubuntu.com/24.04.1/ubuntu-24.04.1-live-server-amd64.iso"
-    ISO_FILE="/tmp/ubuntu-server-24.04.1.iso"
-    echo "Downloading Ubuntu Server 24.04.1 LTS image..."
-    curl -L -o "$ISO_FILE" "$UBUNTU_URL" > /dev/null 2>&1
-    loading_bar "Downloading Ubuntu Server image"
-
-    if [ ! -f "$ISO_FILE" ]; then
-        echo "ERROR: Failed to download Ubuntu Server image. Exiting."
+    # Confirm action with the user
+    echo "WARNING: This will overwrite all data on $DEVICE_PATH."
+    read -p "Are you sure you want to proceed? (yes/no): " CONFIRM
+    if [[ "$CONFIRM" != "yes" ]]; then
+        echo "Aborting."
         exit 1
     fi
 
-    # Write the image to the USB device
-    echo "Writing image to $DEVICE_PATH..."
-    dd if="$ISO_FILE" of="$DEVICE_PATH" bs=4M status=progress && sync
-    loading_bar "Writing Ubuntu Server image"
-
-    echo "Ubuntu Server image has been written to $DEVICE_PATH."
+    # Stream Ubuntu Server image directly to USB
+    UBUNTU_URL="https://releases.ubuntu.com/24.04.1/ubuntu-24.04.1-live-server-amd64.iso"
+    echo "Streaming Ubuntu Server 24.04.1 LTS image directly to $DEVICE_PATH..."
+    curl -L "$UBUNTU_URL" | dd of="$DEVICE_PATH" bs=4M status=progress && sync
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Failed to write the Ubuntu Server image to $DEVICE_PATH."
+        read -p "Do you want to retry the operation? (yes/no): " RETRY
+        if [[ "$RETRY" == "yes" ]]; then
+            write_ubuntu_image
+        else
+            exit 1
+        fi
+    fi
+    echo "Ubuntu Server image has been successfully written to $DEVICE_PATH."
+    clear_checkpoint
 }
 
 # Main menu
@@ -125,6 +173,28 @@ function main_menu {
     esac
 }
 
+# Resume from last checkpoint if available
+function resume_from_checkpoint {
+    local CHECKPOINT=$(load_checkpoint)
+    case $CHECKPOINT in
+        "extend_storage")
+            echo "Resuming from Extend Storage operation..."
+            extend_storage
+            ;;
+        "write_ubuntu_image")
+            echo "Resuming from Write Ubuntu Image operation..."
+            write_ubuntu_image
+            ;;
+        "start")
+            main_menu
+            ;;
+        *)
+            echo "Unknown checkpoint. Starting fresh."
+            main_menu
+            ;;
+    esac
+}
+
 # Main script execution
 check_dependencies
-main_menu
+resume_from_checkpoint
