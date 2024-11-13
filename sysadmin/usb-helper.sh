@@ -42,32 +42,63 @@ function loading_bar {
 # Check disk space
 function check_disk_space {
     echo "Checking available disk space..."
-    REQUIRED_SPACE_MB=500 # Minimum space required (in MB)
+    REQUIRED_SPACE_MB=$1 # Space needed for operation in MB
     AVAILABLE_SPACE_KB=$(df / | tail -1 | awk '{print $4}')
     AVAILABLE_SPACE_MB=$((AVAILABLE_SPACE_KB / 1024))
 
+    echo "Available disk space: $AVAILABLE_SPACE_MB MB."
     if [ "$AVAILABLE_SPACE_MB" -lt "$REQUIRED_SPACE_MB" ]; then
-        echo "ERROR: Insufficient disk space. Only $AVAILABLE_SPACE_MB MB available."
-        echo "You can use Option 1 to extend the storage and resolve this issue."
+        echo "ERROR: Insufficient disk space. $REQUIRED_SPACE_MB MB required."
         return 1
     fi
-    echo "Sufficient disk space available: $AVAILABLE_SPACE_MB MB."
     return 0
+}
+
+# Attempt to free up disk space
+function free_up_space {
+    echo "Attempting to free up disk space..."
+    CACHED_SIZE_MB=$(du -sh /var/cache/apt 2>/dev/null | awk '{print $1}' | sed 's/M//')
+    TEMP_SIZE_MB=$(du -sh /tmp 2>/dev/null | awk '{print $1}' | sed 's/M//')
+
+    echo "Cache size: ${CACHED_SIZE_MB:-0} MB, Temp size: ${TEMP_SIZE_MB:-0} MB."
+    TOTAL_FREED=$((CACHED_SIZE_MB + TEMP_SIZE_MB))
+
+    if [ "$TOTAL_FREED" -eq 0 ]; then
+        echo "No removable cache or temp files found to free space."
+        return 1
+    fi
+
+    read -p "Do you want to clear /var/cache/apt and /tmp to free up $TOTAL_FREED MB? (yes/no): " CLEAR_CHOICE
+    if [[ "$CLEAR_CHOICE" == "yes" ]]; then
+        echo "Clearing /var/cache/apt and /tmp..."
+        rm -rf /var/cache/apt/*
+        rm -rf /tmp/*
+        echo "Freed up $TOTAL_FREED MB."
+        return 0
+    else
+        echo "Space cleanup canceled by user."
+        return 1
+    fi
 }
 
 # Check for required dependencies
 function check_dependencies {
     echo "Gathering required tools..."
     dependencies=(lsblk mkfs.ext4 dd curl)
+    REQUIRED_SPACE_MB=500 # Estimate for dependencies
+
     for dep in "${dependencies[@]}"; do
         echo -n "Checking for $dep..."
         if ! command -v $dep &> /dev/null; then
             echo " not found."
             read -p "Would you like to install $dep? (yes/no): " INSTALL_CHOICE
             if [[ "$INSTALL_CHOICE" == "yes" ]]; then
-                if ! check_disk_space; then
-                    echo "ERROR: Not enough space to install $dep. Please extend storage and try again."
-                    exit 1
+                if ! check_disk_space $REQUIRED_SPACE_MB; then
+                    echo "Insufficient space for installing $dep. Attempting to free space."
+                    if ! free_up_space; then
+                        echo "ERROR: Could not free sufficient space. Please extend storage and try again."
+                        exit 1
+                    fi
                 fi
                 apt-get install -y $dep
                 if [ $? -ne 0 ]; then
