@@ -6,35 +6,84 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Prompt the user for input
+function get_user_input {
+    echo "Please provide the necessary configuration details:"
+    
+    # Prompt for SSH port
+    read -p "Enter the SSH port you want to use (default is 22): " SSH_PORT
+    SSH_PORT=${SSH_PORT:-22} # Default to 22 if no input
+
+    # Confirm input
+    echo "Using SSH port: $SSH_PORT"
+}
+
+# Check for essential tools and install them if missing
+function check_dependencies {
+    echo "Checking and installing dependencies..."
+    dependencies=(curl git)
+    for dep in "${dependencies[@]}"; do
+        if ! command -v $dep &> /dev/null; then
+            echo "$dep is not installed. Installing..."
+            apt-get install -y $dep
+        else
+            echo "$dep is already installed."
+        fi
+    done
+}
+
+# Ensure sufficient disk space
+function check_disk_space {
+    echo "Checking disk space..."
+    local REQUIRED_SPACE_MB=500 # Minimum space required (in MB)
+    local AVAILABLE_SPACE_MB=$(df / | tail -1 | awk '{print $4}')
+    AVAILABLE_SPACE_MB=$((AVAILABLE_SPACE_MB / 1024)) # Convert to MB
+
+    if [ "$AVAILABLE_SPACE_MB" -lt "$REQUIRED_SPACE_MB" ]; then
+        echo "ERROR: Not enough disk space. Free up space and try again."
+        exit 1
+    fi
+}
+
+# Fix any dpkg lock or configuration issues
+function fix_dpkg {
+    echo "Checking for dpkg issues..."
+    if [ -f /var/lib/dpkg/lock ] || [ -f /var/lib/dpkg/lock-frontend ]; then
+        echo "Removing dpkg locks..."
+        rm -f /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend
+    fi
+
+    if ! dpkg --configure -a &>/dev/null; then
+        echo "Attempting to fix dpkg issues..."
+        dpkg --configure -a
+    else
+        echo "dpkg is in a good state."
+    fi
+}
+
 # Lock down SSH
 function secure_ssh {
     echo "Securing SSH..."
     local SSH_CONFIG_FILE="/etc/ssh/sshd_config"
 
-    # Change the SSH port
-    local SSH_PORT="YOUR_NEW_SSH_PORT" # Change this to your desired port
+    # Update the SSH configuration file
     sed -i "s/#Port 22/Port $SSH_PORT/" $SSH_CONFIG_FILE
-
-    # Disable root login over SSH
     sed -i "s/PermitRootLogin yes/PermitRootLogin no/" $SSH_CONFIG_FILE
-
-    # Disable SSH password authentication
     sed -i "s/#PasswordAuthentication yes/PasswordAuthentication no/" $SSH_CONFIG_FILE
 
-    # Restart SSH service
     systemctl restart sshd
 }
 
 # Update and upgrade the server
 function update_upgrade {
     echo "Updating and upgrading server..."
-    apt-get update && apt-get upgrade -y
+    apt-get update -y && apt-get upgrade -y
 }
 
 # Configure the UFW firewall
 function configure_ufw {
     echo "Configuring UFW firewall..."
-    ufw allow $SSH_PORT/tcp # Allow your new SSH port
+    ufw allow $SSH_PORT/tcp
     ufw enable
 }
 
@@ -53,7 +102,11 @@ function setup_aliases {
     source ~/.bashrc
 }
 
-# Run the functions
+# Main script execution
+get_user_input
+check_disk_space
+check_dependencies
+fix_dpkg
 secure_ssh
 update_upgrade
 configure_ufw
