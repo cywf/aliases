@@ -39,6 +39,22 @@ function loading_bar {
     echo " done."
 }
 
+# Check disk space
+function check_disk_space {
+    echo "Checking available disk space..."
+    REQUIRED_SPACE_MB=500 # Minimum space required (in MB)
+    AVAILABLE_SPACE_KB=$(df / | tail -1 | awk '{print $4}')
+    AVAILABLE_SPACE_MB=$((AVAILABLE_SPACE_KB / 1024))
+
+    if [ "$AVAILABLE_SPACE_MB" -lt "$REQUIRED_SPACE_MB" ]; then
+        echo "ERROR: Insufficient disk space. Only $AVAILABLE_SPACE_MB MB available."
+        echo "You can use Option 1 to extend the storage and resolve this issue."
+        return 1
+    fi
+    echo "Sufficient disk space available: $AVAILABLE_SPACE_MB MB."
+    return 0
+}
+
 # Check for required dependencies
 function check_dependencies {
     echo "Gathering required tools..."
@@ -49,6 +65,10 @@ function check_dependencies {
             echo " not found."
             read -p "Would you like to install $dep? (yes/no): " INSTALL_CHOICE
             if [[ "$INSTALL_CHOICE" == "yes" ]]; then
+                if ! check_disk_space; then
+                    echo "ERROR: Not enough space to install $dep. Please extend storage and try again."
+                    exit 1
+                fi
                 apt-get install -y $dep
                 if [ $? -ne 0 ]; then
                     echo "ERROR: Failed to install $dep. Please check your internet connection or package manager."
@@ -107,7 +127,14 @@ function extend_storage {
     fi
     loading_bar "Mounting $DEVICE_PATH"
 
-    echo "Storage has been extended. You can now use $MOUNT_POINT as additional storage."
+    # Reassign temporary directories to the new storage
+    echo "Reassigning temporary directories to use the new storage..."
+    mkdir -p "$MOUNT_POINT/tmp" "$MOUNT_POINT/var/cache/apt"
+    chmod 1777 "$MOUNT_POINT/tmp"
+    mount --bind "$MOUNT_POINT/tmp" /tmp
+    mount --bind "$MOUNT_POINT/var/cache/apt" /var/cache/apt
+
+    echo "Storage has been extended. Temporary directories are now using the additional storage."
     clear_checkpoint
 }
 
