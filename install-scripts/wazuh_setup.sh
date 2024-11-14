@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Bash script to automate Wazuh setup with ZeroTier integration
-# with logging, visual progress indicators, and time zone configuration
+# with logging and interactive install wizard
 
 # Enable strict error handling
 set -e
@@ -9,175 +9,289 @@ set -e
 # Variables
 LOG_FILE="wazuh_setup.log"
 START_TIME=$(date)
+step_counter=1
 
-# Function to print status messages
+# Function to print status messages with colors
 print_status() {
-    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1"
-    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $1" >> "$LOG_FILE"
+    local message="$1"
+    local type="$2"  # INFO, SUCCESS, ERROR
+    local color=""
+    case "$type" in
+        INFO)
+            color="\e[34m"  # Blue
+            ;;
+        SUCCESS)
+            color="\e[32m"  # Green
+            ;;
+        ERROR)
+            color="\e[31m"  # Red
+            ;;
+        *)
+            color=""
+            ;;
+    esac
+    echo -e "${color}[$(date +"%Y-%m-%d %H:%M:%S")] $message\e[0m"
+    echo "[$(date +"%Y-%m-%d %H:%M:%S")] $message" >> "$LOG_FILE"
 }
+
+# Function to display headers
+display_header() {
+    clear
+    echo "############################################################"
+    echo "# Step $step_counter: $1"
+    echo "############################################################"
+    echo ""
+    ((step_counter++))
+}
+
+# Function to handle errors
+error_exit() {
+    print_status "Error on line $1: $2" "ERROR"
+    echo "For more details, check the log file: $LOG_FILE"
+    exit 1
+}
+
+# Trap errors
+trap 'error_exit ${LINENO} "$BASH_COMMAND"' ERR
 
 # Redirect all output to the log file
 exec > >(tee -a "$LOG_FILE") 2>&1
 
-print_status "Script started at $START_TIME"
+print_status "Script started at $START_TIME" "INFO"
 
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
-    print_status "This script must be run as root. Please run 'sudo bash $0'"
+    print_status "This script must be run as root. Please run 'sudo bash $0'" "ERROR"
     exit 1
 fi
 
-# Ask for the user's time zone
-print_status "Configuring system time zone..."
-timedatectl list-timezones
-read -p "Please enter your time zone (e.g., 'America/New_York'): " USER_TIMEZONE
-timedatectl set-timezone "$USER_TIMEZONE"
-print_status "Time zone set to $USER_TIMEZONE"
-
-# Enable systemd-timesyncd for time synchronization
-print_status "Enabling and starting systemd-timesyncd for time synchronization..."
-timedatectl set-ntp true
-systemctl enable systemd-timesyncd.service
-systemctl start systemd-timesyncd.service
-
-# Verify time synchronization status
-print_status "Time synchronization status:"
-timedatectl status
+# Display welcome message
+display_header "Welcome to the Wazuh + ZeroTier Install Wizard"
+echo "This script will guide you through the installation of Wazuh with ZeroTier integration."
+echo "Please follow the prompts and instructions carefully."
+echo ""
+read -p "Press Enter to continue..."
 
 # Update and Upgrade System Packages
-print_status "Updating and upgrading system packages..."
-apt-get update && apt-get upgrade -y
+display_header "Updating and upgrading system packages"
+print_status "Updating package lists..." "INFO"
+apt-get update
+print_status "Upgrading installed packages..." "INFO"
+apt-get upgrade -y
+print_status "System packages updated and upgraded." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Install Essential Dependencies
-print_status "Installing essential dependencies..."
+display_header "Installing essential dependencies"
+print_status "Installing curl, wget, and other dependencies..." "INFO"
 apt-get install -y curl wget apt-transport-https gnupg2 lsb-release software-properties-common jq
+print_status "Essential dependencies installed." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Install Lynis for Security Scan
-print_status "Installing Lynis for security auditing..."
+display_header "Installing Lynis for security auditing"
+print_status "Installing Lynis..." "INFO"
 apt-get install -y lynis
-
-print_status "Running Lynis security audit..."
+print_status "Running Lynis security audit..." "INFO"
 lynis audit system --quick
+print_status "Lynis security audit completed." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Install ZeroTier
-print_status "Installing ZeroTier..."
+display_header "Installing ZeroTier"
+print_status "Installing ZeroTier..." "INFO"
 curl -s https://install.zerotier.com | bash
+print_status "ZeroTier installed." "SUCCESS"
 
 # Prompt user for ZeroTier Network ID
-read -p "Please enter your ZeroTier Network ID: " ZT_NETWORK_ID
+print_status "Please enter your ZeroTier Network ID." "INFO"
+read -p "ZeroTier Network ID: " ZT_NETWORK_ID
 
 # Join ZeroTier Network
-print_status "Joining ZeroTier network $ZT_NETWORK_ID..."
+print_status "Joining ZeroTier network $ZT_NETWORK_ID..." "INFO"
 zerotier-cli join $ZT_NETWORK_ID
-
-print_status "Please authorize this device in your ZeroTier Central dashboard, then press Enter to continue..."
+print_status "Joined ZeroTier network. Please authorize this device in your ZeroTier Central dashboard." "INFO"
+echo ""
 read -p "Press Enter to continue once authorized..."
 
 # Retrieve ZeroTier IP Address
-print_status "Retrieving ZeroTier IP address..."
-ZT_IP=$(zerotier-cli listnetworks -j | jq -r '.[] | select(.nwid=="'$ZT_NETWORK_ID'") | .assignedAddresses[0]' | cut -d'/' -f1)
+display_header "Retrieving ZeroTier IP address"
+print_status "Attempting to retrieve ZeroTier IP address..." "INFO"
+ZT_IP=$(zerotier-cli listnetworks -j | jq -r '.[] | select(.nwid=="'"$ZT_NETWORK_ID"'") | .assignedAddresses[0]' | cut -d'/' -f1)
 
 if [ -z "$ZT_IP" ]; then
-    print_status "Could not automatically retrieve your ZeroTier IP address."
+    print_status "Could not automatically retrieve your ZeroTier IP address." "ERROR"
     read -p "If you know your ZeroTier IP address, please enter it now (or press Enter to exit): " ZT_IP
     if [ -z "$ZT_IP" ]; then
-        print_status "ZeroTier IP address is required for configuration. Exiting."
+        print_status "ZeroTier IP address is required for configuration. Exiting." "ERROR"
         exit 1
     fi
 else
-    print_status "ZeroTier IP address is $ZT_IP"
+    print_status "ZeroTier IP address is $ZT_IP" "SUCCESS"
 fi
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Ensure ZeroTier service is enabled and running
-print_status "Enabling and starting ZeroTier service..."
+display_header "Configuring ZeroTier service"
+print_status "Enabling and starting ZeroTier service..." "INFO"
 systemctl enable zerotier-one
 systemctl start zerotier-one
+print_status "ZeroTier service is enabled and running." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Add Wazuh repository and GPG key
-print_status "Adding Wazuh repository and GPG key..."
+display_header "Adding Wazuh repository and GPG key"
+print_status "Adding Wazuh GPG key..." "INFO"
 curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | apt-key add -
+print_status "Adding Wazuh repository..." "INFO"
 echo "deb https://packages.wazuh.com/4.x/apt/ stable main" | tee /etc/apt/sources.list.d/wazuh.list
+print_status "Wazuh repository added." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Update apt and install Wazuh Manager
-print_status "Installing Wazuh Manager..."
+display_header "Installing Wazuh Manager"
+print_status "Updating package lists..." "INFO"
 apt-get update
+print_status "Installing Wazuh Manager..." "INFO"
 apt-get install -y wazuh-manager
+print_status "Wazuh Manager installed." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Add Elasticsearch GPG key and repository
-print_status "Adding Elasticsearch GPG key and repository..."
+display_header "Adding Elasticsearch repository and GPG key"
+print_status "Adding Elasticsearch GPG key..." "INFO"
 wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add -
+print_status "Adding Elasticsearch repository..." "INFO"
 echo "deb https://artifacts.elastic.co/packages/oss-7.x/apt stable main" | tee /etc/apt/sources.list.d/elastic-7.x.list
+print_status "Elasticsearch repository added." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Install Elasticsearch OSS 7.10.2
-print_status "Installing Elasticsearch OSS 7.10.2..."
+display_header "Installing Elasticsearch OSS 7.10.2"
+print_status "Updating package lists..." "INFO"
 apt-get update
+print_status "Installing Elasticsearch..." "INFO"
 apt-get install -y elasticsearch-oss=7.10.2
+print_status "Elasticsearch installed." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Configure Elasticsearch
-print_status "Configuring Elasticsearch..."
+display_header "Configuring Elasticsearch"
+print_status "Configuring Elasticsearch settings..." "INFO"
 cat >> /etc/elasticsearch/elasticsearch.yml <<EOL
 network.host: $ZT_IP
 http.port: 9200
 discovery.type: single-node
 EOL
+print_status "Elasticsearch configured." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Enable and Start Elasticsearch
-print_status "Enabling and starting Elasticsearch..."
+display_header "Starting Elasticsearch service"
+print_status "Enabling and starting Elasticsearch..." "INFO"
 systemctl daemon-reload
 systemctl enable elasticsearch
 systemctl start elasticsearch
+print_status "Elasticsearch service is enabled and running." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Install Kibana OSS 7.10.2
-print_status "Installing Kibana OSS 7.10.2..."
+display_header "Installing Kibana OSS 7.10.2"
+print_status "Installing Kibana..." "INFO"
 apt-get install -y kibana-oss=7.10.2
+print_status "Kibana installed." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Configure Kibana
-print_status "Configuring Kibana..."
+display_header "Configuring Kibana"
+print_status "Configuring Kibana settings..." "INFO"
 cat >> /etc/kibana/kibana.yml <<EOL
 server.host: "$ZT_IP"
 elasticsearch.hosts: ["http://$ZT_IP:9200"]
 EOL
+print_status "Kibana configured." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Enable and Start Kibana
-print_status "Enabling and starting Kibana..."
+display_header "Starting Kibana service"
+print_status "Enabling and starting Kibana..." "INFO"
 systemctl daemon-reload
 systemctl enable kibana
 systemctl start kibana
+print_status "Kibana service is enabled and running." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Install Wazuh Elasticsearch Plugin
-print_status "Installing Wazuh Elasticsearch plugin..."
-/usr/share/elasticsearch/bin/elasticsearch-plugin install --batch https://packages.wazuh.com/4.x/elasticsearch-plugins/wazuh-elasticsearch-plugin-4.4.0_7.10.2.zip
+display_header "Installing Wazuh Elasticsearch plugin"
+print_status "Installing Wazuh Elasticsearch plugin..." "INFO"
+wget https://packages.wazuh.com/4.x/elasticsearch-plugins/wazuh-elasticsearch-plugin-4.4.0_7.10.2.zip -O /tmp/wazuh-elasticsearch-plugin.zip
+/usr/share/elasticsearch/bin/elasticsearch-plugin install --batch file:///tmp/wazuh-elasticsearch-plugin.zip
+print_status "Wazuh Elasticsearch plugin installed." "SUCCESS"
 
 # Restart Elasticsearch
-print_status "Restarting Elasticsearch..."
+print_status "Restarting Elasticsearch..." "INFO"
 systemctl restart elasticsearch
+print_status "Elasticsearch restarted." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Install Wazuh Kibana Plugin
-print_status "Installing Wazuh Kibana plugin..."
-/usr/share/kibana/bin/kibana-plugin install https://packages.wazuh.com/4.x/kibana-plugins/wazuh_kibana-4.4.0_7.10.2.zip
+display_header "Installing Wazuh Kibana plugin"
+print_status "Installing Wazuh Kibana plugin..." "INFO"
+wget https://packages.wazuh.com/4.x/kibana-plugins/wazuh_kibana-4.4.0_7.10.2.zip -O /tmp/wazuh-kibana-plugin.zip
+/usr/share/kibana/bin/kibana-plugin install file:///tmp/wazuh-kibana-plugin.zip
+print_status "Wazuh Kibana plugin installed." "SUCCESS"
 
 # Restart Kibana
-print_status "Restarting Kibana..."
+print_status "Restarting Kibana..." "INFO"
 systemctl restart kibana
+print_status "Kibana restarted." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Start and Enable Wazuh Manager
-print_status "Starting and enabling Wazuh Manager..."
+display_header "Starting Wazuh Manager service"
+print_status "Enabling and starting Wazuh Manager..." "INFO"
 systemctl daemon-reload
 systemctl enable wazuh-manager
 systemctl start wazuh-manager
+print_status "Wazuh Manager service is enabled and running." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
 
 # Verify Services Status
-print_status "Verifying service statuses..."
-print_status "Wazuh Manager Status:"
+display_header "Verifying service statuses"
+print_status "Checking Wazuh Manager status..." "INFO"
 systemctl status wazuh-manager --no-pager
-print_status "Elasticsearch Status:"
+print_status "Checking Elasticsearch status..." "INFO"
 systemctl status elasticsearch --no-pager
-print_status "Kibana Status:"
+print_status "Checking Kibana status..." "INFO"
 systemctl status kibana --no-pager
+print_status "Service status verification completed." "SUCCESS"
+echo ""
+read -p "Press Enter to finish the installation..."
 
 # Provide Access Instructions
+display_header "Installation Complete"
 END_TIME=$(date)
-print_status "Installation complete at $END_TIME"
-print_status "You can access the Wazuh dashboard via Kibana at: http://$ZT_IP:5601"
-print_status "Note: If you cannot access the dashboard, ensure that the necessary ports are open and accessible over your ZeroTier network."
-print_status "You may also need to configure your firewall to allow traffic on port 5601."
+print_status "Installation completed at $END_TIME" "SUCCESS"
+echo ""
+print_status "You can access the Wazuh dashboard via Kibana at: http://$ZT_IP:5601" "INFO"
+print_status "Note: If you cannot access the dashboard, ensure that the necessary ports are open and accessible over your ZeroTier network." "INFO"
+print_status "You may also need to configure your firewall to allow traffic on port 5601." "INFO"
+echo ""
+print_status "Thank you for using the Wazuh + ZeroTier Install Wizard!" "SUCCESS"
