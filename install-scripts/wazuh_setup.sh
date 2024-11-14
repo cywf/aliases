@@ -75,17 +75,17 @@ read -p "Press Enter to continue..."
 # Preliminary System Checks and Fixes
 display_header "Preliminary System Checks and Fixes"
 print_status "Cleaning up and updating package lists..." "INFO"
-apt-get clean
-apt-get autoremove -y
+apt clean
+apt autoremove -y
 rm -rf /var/lib/apt/lists/*
 mkdir -p /var/lib/apt/lists/partial
-apt-get update || true  # Allow failure for initial update
+apt update || true  # Allow failure for initial update
 
 print_status "Fixing broken dependencies (if any)..." "INFO"
-apt-get install -f -y
+apt install -f -y
 
 print_status "Updating package lists again..." "INFO"
-apt-get update
+apt update
 
 print_status "System checks and fixes completed." "SUCCESS"
 echo ""
@@ -107,10 +107,10 @@ read -p "Press Enter to continue to the next step..."
 # Update and Upgrade System Packages
 display_header "Updating and upgrading system packages"
 print_status "Updating package lists..." "INFO"
-apt-get update
+apt update
 
 print_status "Upgrading installed packages..." "INFO"
-apt-get upgrade -y
+apt upgrade -y
 
 print_status "System packages updated and upgraded." "SUCCESS"
 echo ""
@@ -119,7 +119,7 @@ read -p "Press Enter to continue to the next step..."
 # Install Essential Dependencies
 display_header "Installing essential dependencies"
 print_status "Installing curl, wget, and other dependencies..." "INFO"
-apt-get install -y curl wget apt-transport-https gnupg2 lsb-release software-properties-common jq gnupg-agent
+apt install -y curl wget apt-transport-https gnupg2 lsb-release software-properties-common jq gnupg-agent
 print_status "Essential dependencies installed." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
@@ -127,7 +127,7 @@ read -p "Press Enter to continue to the next step..."
 # Install Lynis for Security Scan
 display_header "Installing Lynis for security auditing"
 print_status "Installing Lynis..." "INFO"
-apt-get install -y lynis
+apt install -y lynis
 print_status "Running Lynis security audit..." "INFO"
 lynis audit system --quick
 print_status "Lynis security audit completed." "SUCCESS"
@@ -191,10 +191,10 @@ read -p "Press Enter to continue to the next step..."
 # Update apt and install Wazuh Manager
 display_header "Installing Wazuh Manager"
 print_status "Updating package lists..." "INFO"
-apt-get update
+apt update
 
 print_status "Installing Wazuh Manager..." "INFO"
-apt-get install -y wazuh-manager
+apt install -y wazuh-manager
 print_status "Wazuh Manager installed." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
@@ -205,7 +205,7 @@ print_status "Adding Elasticsearch GPG key..." "INFO"
 wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add -
 
 print_status "Installing apt-transport-https..." "INFO"
-apt-get install -y apt-transport-https
+apt install -y apt-transport-https
 
 print_status "Adding Elasticsearch repository..." "INFO"
 echo "deb https://artifacts.elastic.co/packages/$ELASTIC_VERSION/apt stable main" | tee /etc/apt/sources.list.d/elastic-$ELASTIC_VERSION.list
@@ -216,10 +216,10 @@ read -p "Press Enter to continue to the next step..."
 # Update apt and install Elasticsearch OSS
 display_header "Installing Elasticsearch OSS $ELASTIC_VERSION"
 print_status "Updating package lists..." "INFO"
-apt-get update
+apt update
 
 print_status "Installing Elasticsearch..." "INFO"
-apt-get install -y elasticsearch-oss=$ELASTIC_VERSION
+apt install -y elasticsearch-oss=$ELASTIC_VERSION
 print_status "Elasticsearch installed." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
@@ -249,7 +249,7 @@ read -p "Press Enter to continue to the next step..."
 # Install Kibana OSS
 display_header "Installing Kibana OSS $ELASTIC_VERSION"
 print_status "Installing Kibana..." "INFO"
-apt-get install -y kibana-oss=$ELASTIC_VERSION
+apt install -y kibana-oss=$ELASTIC_VERSION
 print_status "Kibana installed." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
@@ -278,7 +278,7 @@ read -p "Press Enter to continue to the next step..."
 # Install NGINX and Configure Reverse Proxy
 display_header "Installing and Configuring NGINX Reverse Proxy"
 print_status "Installing NGINX..." "INFO"
-apt-get install -y nginx
+apt install -y nginx
 
 print_status "Configuring NGINX as a reverse proxy for Kibana..." "INFO"
 cat > /etc/nginx/sites-available/kibana <<EOL
