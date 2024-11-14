@@ -143,224 +143,255 @@ show_progress() {
 
 # Function to update progress
 update_progress() {
-    local step_name="$1"
     ((CURRENT_STEP++))
-    print_status "Step $CURRENT_STEP/$TOTAL_STEPS: $step_name" "INFO"
-    show_progress $CURRENT_STEP $TOTAL_STEPS
-    echo -e "\n"
+    show_progress "$CURRENT_STEP" "$TOTAL_STEPS"
 }
 
 # Function to check prerequisites
 check_prerequisites() {
-    update_progress "Checking Prerequisites"
+    print_status "Checking prerequisites..." "INFO"
     
-    local required_commands=(
-        "curl"
-        "dig"
-        "docker"
-        "openssl"
-        "jq"
-    )
-    
-    local missing_commands=()
-    
-    for cmd in "${required_commands[@]}"; do
-        if ! command -v "$cmd" &>/dev/null; then
-            missing_commands+=("$cmd")
-        fi
-    done
-    
-    if [ ${#missing_commands[@]} -ne 0 ]; then
-        print_status "Missing required commands: ${missing_commands[*]}" "ERROR"
+    # Check for root privileges
+    if [ "$EUID" -ne 0 ]; then
+        print_status "This script must be run as root" "ERROR"
         return 1
     fi
     
-    print_status "All prerequisites are met" "SUCCESS"
+    # Check for Docker
+    if ! command -v docker &> /dev/null; then
+        print_status "Docker is not installed. Please install Docker first." "ERROR"
+        return 1
+    fi
+    
+    # Check for Docker Compose
+    if ! command -v docker-compose &> /dev/null; then
+        print_status "Docker Compose is not installed. Please install Docker Compose first." "ERROR"
+        return 1
+    fi
+    
+    print_status "All prerequisites are met." "SUCCESS"
+    return 0
+}
+
+# Function to configure network
+configure_network() {
+    print_status "Configuring network..." "INFO"
+    
+    # Example: Check and configure ZeroTier network
+    if [ -n "$ZEROTIER_NETWORK_ID" ]; then
+        if ! command -v zerotier-cli &> /dev/null; then
+            print_status "ZeroTier CLI is not installed. Please install it first." "ERROR"
+            return 1
+        fi
+        
+        zerotier-cli join "$ZEROTIER_NETWORK_ID"
+        ZEROTIER_IP=$(zerotier-cli listnetworks | grep "$ZEROTIER_NETWORK_ID" | awk '{print $NF}')
+        print_status "Joined ZeroTier network with IP: $ZEROTIER_IP" "SUCCESS"
+    fi
+    
+    # Example: Configure public IP
+    if [ -z "$PUBLIC_IP" ]; then
+        PUBLIC_IP=$(curl -s ifconfig.me)
+        print_status "Detected public IP: $PUBLIC_IP" "INFO"
+    fi
+    
+    return 0
+}
+
+# Function to install Docker
+install_docker() {
+    print_status "Installing Docker..." "INFO"
+    
+    # Check if Docker is already installed
+    if command -v docker &> /dev/null; then
+        print_status "Docker is already installed." "SUCCESS"
+        return 0
+    fi
+    
+    # Install Docker
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sh get-docker.sh
+    rm get-docker.sh
+    
+    # Start Docker service
+    systemctl start docker
+    systemctl enable docker
+    
+    print_status "Docker installed successfully." "SUCCESS"
+    return 0
+}
+
+# Function to install Docker Compose
+install_docker_compose() {
+    print_status "Installing Docker Compose..." "INFO"
+    
+    # Check if Docker Compose is already installed
+    if command -v docker-compose &> /dev/null; then
+        print_status "Docker Compose is already installed." "SUCCESS"
+        return 0
+    fi
+    
+    # Install Docker Compose
+    curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+    
+    print_status "Docker Compose installed successfully." "SUCCESS"
+    return 0
+}
+
+# Function to set up domain
+setup_domain() {
+    print_status "Setting up domain..." "INFO"
+    
+    if [ -z "$DOMAIN" ]; then
+        print_status "No domain specified. Skipping domain setup." "WARNING"
+        return 0
+    fi
+    
+    # Example: Validate domain format
+    if ! [[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+        print_status "Invalid domain format: $DOMAIN" "ERROR"
+        return 1
+    fi
+    
+    print_status "Domain $DOMAIN is valid." "SUCCESS"
     return 0
 }
 
 # Function to generate Docker Compose configuration
 generate_docker_compose() {
-    update_progress "Generating Docker Compose Configuration"
+    print_status "Generating Docker Compose configuration..." "INFO"
     
     local install_dir="/opt/wazuh-docker"
     mkdir -p "$install_dir"
     
     cat > "$install_dir/docker-compose.yml" << EOF
-version: '3.8'
+version: '3.9'
 services:
   wazuh:
-    image: wazuh/wazuh-manager:latest
+    image: wazuh/wazuh
     ports:
       - "1514:1514"
       - "1515:1515"
-      - "514:514/udp"
       - "55000:55000"
     environment:
-      - WAZUH_PASSWORD=admin
+      - WAZUH_MANAGER_IP=$PUBLIC_IP
     volumes:
-      - wazuh_data:/var/ossec
-    networks:
-      - wazuh-network
-
+      - wazuh_data:/var/ossec/data
   elasticsearch:
-    image: wazuh/wazuh-elasticsearch:latest
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.10.2
     environment:
-      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+      - discovery.type=single-node
     volumes:
-      - elastic_data:/usr/share/elasticsearch/data
-    networks:
-      - wazuh-network
-
+      - es_data:/usr/share/elasticsearch/data
   kibana:
-    image: wazuh/wazuh-kibana:latest
+    image: docker.elastic.co/kibana/kibana:7.10.2
     ports:
       - "5601:5601"
-    networks:
-      - wazuh-network
-
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
 volumes:
   wazuh_data:
-  elastic_data:
-
-networks:
-  wazuh-network:
+  es_data:
 EOF
-    
-    print_status "Docker Compose configuration generated" "SUCCESS"
+
+    print_status "Docker Compose configuration generated successfully." "SUCCESS"
     return 0
 }
 
-# Function to setup SSL
+# Function to set up SSL
 setup_ssl() {
-    update_progress "Setting up SSL"
+    print_status "Setting up SSL..." "INFO"
     
-    # Placeholder for SSL setup logic
-    print_status "SSL setup is not implemented yet" "WARNING"
+    if [ "$USE_SSL" = false ]; then
+        print_status "SSL is not enabled. Skipping SSL setup." "WARNING"
+        return 0
+    fi
+    
+    # Example: Use Let's Encrypt for SSL
+    if ! command -v certbot &> /dev/null; then
+        print_status "Certbot is not installed. Please install Certbot first." "ERROR"
+        return 1
+    fi
+    
+    certbot certonly --standalone -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive
+    if [ ! -d "/etc/letsencrypt/live/$DOMAIN" ]; then
+        print_status "Failed to obtain SSL certificate for $DOMAIN" "ERROR"
+        return 1
+    fi
+    
+    print_status "SSL certificate obtained for $DOMAIN" "SUCCESS"
     return 0
 }
 
-# Function to start Wazuh services
+# Function to start Docker containers
 start_wazuh_services() {
-    update_progress "Starting Wazuh Services"
+    print_status "Starting Wazuh services..." "INFO"
     
     local install_dir="/opt/wazuh-docker"
+    if [ ! -f "$install_dir/docker-compose.yml" ]; then
+        print_status "Docker Compose configuration not found. Cannot start services." "ERROR"
+        return 1
+    fi
+    
     cd "$install_dir"
+    docker-compose up -d
     
-    # Pull images first
-    print_status "Pulling Docker images..." "INFO"
-    if ! docker-compose pull; then
-        print_status "Failed to pull Docker images" "ERROR"
+    print_status "Wazuh services started successfully." "SUCCESS"
+    return 0
+}
+
+# Function to verify installation
+verify_complete_installation() {
+    print_status "Verifying installation..." "INFO"
+    
+    # Check if Wazuh services are running
+    if ! docker ps | grep -q wazuh; then
+        print_status "Wazuh service is not running." "ERROR"
         return 1
     fi
     
-    # Start services
-    print_status "Starting containers..." "INFO"
-    if ! docker-compose up -d; then
-        print_status "Failed to start containers" "ERROR"
+    # Check if Elasticsearch service is running
+    if ! docker ps | grep -q elasticsearch; then
+        print_status "Elasticsearch service is not running." "ERROR"
         return 1
     fi
     
-    # Wait for services to be ready
-    local services=("wazuh" "elasticsearch" "kibana")
-    local max_attempts=30
-    local attempt=1
+    # Check if Kibana service is running
+    if ! docker ps | grep -q kibana; then
+        print_status "Kibana service is not running." "ERROR"
+        return 1
+    fi
     
-    for service in "${services[@]}"; do
-        print_status "Waiting for $service to be ready..." "INFO"
-        attempt=1
-        
-        while [ $attempt -le $max_attempts ]; do
-            show_progress $attempt $max_attempts
-            
-            if docker-compose ps "$service" | grep -q "Up"; then
-                echo "" # New line after progress bar
-                print_status "$service is ready" "SUCCESS"
-                break
-            fi
-            
-            if [ $attempt -eq $max_attempts ]; then
-                echo "" # New line after progress bar
-                print_status "$service failed to start properly" "ERROR"
-                return 1
-            fi
-            
-            sleep 2
-            ((attempt++))
-        done
-    done
-    
-    print_status "All services started successfully" "SUCCESS"
+    print_status "All services are running successfully." "SUCCESS"
     return 0
 }
 
 # Function to save installation details
 save_installation_details() {
-    local install_dir="/opt/wazuh-docker"
-    local details_file="$install_dir/installation_details.json"
+    print_status "Saving installation details..." "INFO"
     
+    local details_file="${SCRIPT_DIR}/installation_details.txt"
     cat > "$details_file" << EOF
-{
-    "installation_date": "$(date)",
-    "version": "$SCRIPT_VERSION",
-    "domain": "$DOMAIN",
-    "email": "$EMAIL",
-    "use_ssl": $USE_SSL,
-    "use_cloudflare": $USE_CLOUDFLARE,
-    "zerotier_network_id": "$ZEROTIER_NETWORK_ID",
-    "public_ip": "$PUBLIC_IP",
-    "zerotier_ip": "$ZEROTIER_IP"
-}
+Wazuh Installation Details
+==========================
+Domain: $DOMAIN
+Public IP: $PUBLIC_IP
+SSL Enabled: $USE_SSL
+Installation Directory: /opt/wazuh-docker
+Docker Compose Version: $DOCKER_COMPOSE_VERSION
+
+Services:
+- Wazuh: http://$PUBLIC_IP:55000
+- Elasticsearch: http://$PUBLIC_IP:9200
+- Kibana: http://$PUBLIC_IP:5601
+
 EOF
-    
-    chmod 600 "$details_file"
+
     print_status "Installation details saved to $details_file" "SUCCESS"
 }
 
-# Function to display completion message
-show_completion_message() {
-    show_banner "success"
-    
-    cat << EOF
-Installation Details:
---------------------
-Domain: $DOMAIN
-Access URL: ${USE_SSL:+https://}${USE_SSL:-http://}$DOMAIN
-ZeroTier IP: $ZEROTIER_IP
-Installation Directory: /opt/wazuh-docker
-
-Default Credentials:
-------------------
-Username: admin
-Password: admin
-
-Important Next Steps:
--------------------
-1. Change the default password immediately after first login
-2. Configure your firewall rules
-3. Set up regular backups
-4. Review the installation logs at: $LOG_FILE
-
-Useful Commands:
---------------
-- View logs: docker-compose logs -f
-- Restart services: docker-compose restart
-- Stop services: docker-compose down
-- Start services: docker-compose up -d
-
-Support:
--------
-Documentation: https://documentation.wazuh.com
-Community: https://wazuh.com/community
-EOF
-    
-    # Save details to log file
-    echo -e "\nInstallation completed at: $(date)" >> "$LOG_FILE"
-    echo "Domain: $DOMAIN" >> "$LOG_FILE"
-    echo "ZeroTier IP: $ZEROTIER_IP" >> "$LOG_FILE"
-}
-
-# Function to perform cleanup on error
+# Function to clean up on error
 cleanup_on_error() {
     local error_code=$1
     local error_line=$2
@@ -405,6 +436,34 @@ main() {
         exit 1
     fi
     
+    # Configure network
+    if ! configure_network; then
+        show_banner "error"
+        print_status "Network configuration failed" "ERROR"
+        exit 1
+    fi
+    
+    # Set up domain
+    if ! setup_domain; then
+        show_banner "error"
+        print_status "Domain setup failed" "ERROR"
+        exit 1
+    fi
+    
+    # Install Docker
+    if ! install_docker; then
+        show_banner "error"
+        print_status "Docker installation failed" "ERROR"
+        exit 1
+    fi
+    
+    # Install Docker Compose
+    if ! install_docker_compose; then
+        show_banner "error"
+        print_status "Docker Compose installation failed" "ERROR"
+        exit 1
+    fi
+    
     # Generate Docker Compose configuration
     if ! generate_docker_compose; then
         show_banner "error"
@@ -414,13 +473,11 @@ main() {
     fi
     
     # Setup SSL if enabled
-    if [ "$USE_SSL" = true ]; then
-        if ! setup_ssl; then
-            show_banner "error"
-            print_status "SSL setup failed" "ERROR"
-            cleanup_on_error
-            exit 1
-        fi
+    if ! setup_ssl; then
+        show_banner "error"
+        print_status "SSL setup failed" "ERROR"
+        cleanup_on_error
+        exit 1
     fi
     
     # Start Wazuh services
@@ -431,11 +488,20 @@ main() {
         exit 1
     fi
     
+    # Verify installation
+    if ! verify_complete_installation; then
+        show_banner "error"
+        print_status "Installation verification failed" "ERROR"
+        cleanup_on_error
+        exit 1
+    fi
+    
     # Save installation details
     save_installation_details
     
-    # Show completion message
-    show_completion_message
+    # Show success banner
+    show_banner "success"
+    print_status "Installation completed successfully." "SUCCESS"
     
     return 0
 }
