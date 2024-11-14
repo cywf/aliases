@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Bash script to automate Wazuh setup with ZeroTier integration
-# with logging and visual progress indicators
+# with logging, visual progress indicators, and time zone configuration
 
 # Enable strict error handling
 set -e
@@ -27,23 +27,34 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Ask for the user's time zone
+print_status "Configuring system time zone..."
+timedatectl list-timezones
+read -p "Please enter your time zone (e.g., 'America/New_York'): " USER_TIMEZONE
+timedatectl set-timezone "$USER_TIMEZONE"
+print_status "Time zone set to $USER_TIMEZONE"
+
+# Enable systemd-timesyncd for time synchronization
+print_status "Enabling and starting systemd-timesyncd for time synchronization..."
+timedatectl set-ntp true
+systemctl enable systemd-timesyncd.service
+systemctl start systemd-timesyncd.service
+
+# Verify time synchronization status
+print_status "Time synchronization status:"
+timedatectl status
+
 # Update and Upgrade System Packages
 print_status "Updating and upgrading system packages..."
-apt update && apt upgrade -y
+apt-get update && apt-get upgrade -y
 
 # Install Essential Dependencies
 print_status "Installing essential dependencies..."
-apt install -y curl wget apt-transport-https gnupg2 lsb-release software-properties-common jq
-
-# Synchronize System Time
-print_status "Installing and starting NTP..."
-apt install -y ntp
-systemctl enable ntp
-systemctl start ntp
+apt-get install -y curl wget apt-transport-https gnupg2 lsb-release software-properties-common jq
 
 # Install Lynis for Security Scan
 print_status "Installing Lynis for security auditing..."
-apt install -y lynis
+apt-get install -y lynis
 
 print_status "Running Lynis security audit..."
 lynis audit system --quick
@@ -85,28 +96,30 @@ systemctl start zerotier-one
 # Add Wazuh repository and GPG key
 print_status "Adding Wazuh repository and GPG key..."
 curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | apt-key add -
-echo "deb https://packages.wazuh.com/4.x/apt/ stable main" > /etc/apt/sources.list.d/wazuh.list
+echo "deb https://packages.wazuh.com/4.x/apt/ stable main" | tee /etc/apt/sources.list.d/wazuh.list
 
 # Update apt and install Wazuh Manager
 print_status "Installing Wazuh Manager..."
-apt update
-apt install -y wazuh-manager
+apt-get update
+apt-get install -y wazuh-manager
 
 # Add Elasticsearch GPG key and repository
 print_status "Adding Elasticsearch GPG key and repository..."
 wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add -
-echo "deb https://artifacts.elastic.co/packages/oss-7.x/apt stable main" > /etc/apt/sources.list.d/elastic-7.x.list
+echo "deb https://artifacts.elastic.co/packages/oss-7.x/apt stable main" | tee /etc/apt/sources.list.d/elastic-7.x.list
 
 # Install Elasticsearch OSS 7.10.2
 print_status "Installing Elasticsearch OSS 7.10.2..."
-apt update
-apt install -y elasticsearch-oss=7.10.2
+apt-get update
+apt-get install -y elasticsearch-oss=7.10.2
 
 # Configure Elasticsearch
 print_status "Configuring Elasticsearch..."
-echo "network.host: $ZT_IP" >> /etc/elasticsearch/elasticsearch.yml
-echo "http.port: 9200" >> /etc/elasticsearch/elasticsearch.yml
-echo "discovery.type: single-node" >> /etc/elasticsearch/elasticsearch.yml
+cat >> /etc/elasticsearch/elasticsearch.yml <<EOL
+network.host: $ZT_IP
+http.port: 9200
+discovery.type: single-node
+EOL
 
 # Enable and Start Elasticsearch
 print_status "Enabling and starting Elasticsearch..."
@@ -116,12 +129,14 @@ systemctl start elasticsearch
 
 # Install Kibana OSS 7.10.2
 print_status "Installing Kibana OSS 7.10.2..."
-apt install -y kibana-oss=7.10.2
+apt-get install -y kibana-oss=7.10.2
 
 # Configure Kibana
 print_status "Configuring Kibana..."
-echo "server.host: \"$ZT_IP\"" >> /etc/kibana/kibana.yml
-echo "elasticsearch.hosts: [\"http://$ZT_IP:9200\"]" >> /etc/kibana/kibana.yml
+cat >> /etc/kibana/kibana.yml <<EOL
+server.host: "$ZT_IP"
+elasticsearch.hosts: ["http://$ZT_IP:9200"]
+EOL
 
 # Enable and Start Kibana
 print_status "Enabling and starting Kibana..."
@@ -131,7 +146,7 @@ systemctl start kibana
 
 # Install Wazuh Elasticsearch Plugin
 print_status "Installing Wazuh Elasticsearch plugin..."
-/usr/share/elasticsearch/bin/elasticsearch-plugin install --batch https://packages.wazuh.com/4.x/elasticsearch/wazuh-elasticsearch-plugin-4.4.0_7.10.2.zip
+/usr/share/elasticsearch/bin/elasticsearch-plugin install --batch https://packages.wazuh.com/4.x/elasticsearch-plugins/wazuh-elasticsearch-plugin-4.4.0_7.10.2.zip
 
 # Restart Elasticsearch
 print_status "Restarting Elasticsearch..."
@@ -139,7 +154,7 @@ systemctl restart elasticsearch
 
 # Install Wazuh Kibana Plugin
 print_status "Installing Wazuh Kibana plugin..."
-/usr/share/kibana/bin/kibana-plugin install https://packages.wazuh.com/4.x/kibana/wazuh_kibana-4.4.0_7.10.2.zip
+/usr/share/kibana/bin/kibana-plugin install https://packages.wazuh.com/4.x/kibana-plugins/wazuh_kibana-4.4.0_7.10.2.zip
 
 # Restart Kibana
 print_status "Restarting Kibana..."
