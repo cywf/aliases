@@ -72,6 +72,22 @@ echo "Please follow the prompts and instructions carefully."
 echo ""
 read -p "Press Enter to continue..."
 
+# Ask for Wazuh and Elasticsearch versions
+display_header "Specify Wazuh and Elasticsearch Versions"
+print_status "Retrieving the latest Wazuh version..." "INFO"
+LATEST_WAZUH_VERSION=$(curl -s https://packages.wazuh.com/ | grep -oP 'href="(\d+\.\d+\.\d+)/"' | grep -oP '\d+\.\d+\.\d+' | sort -V | tail -n1)
+print_status "Latest Wazuh version is $LATEST_WAZUH_VERSION" "SUCCESS"
+read -p "Enter the Wazuh version to install [default: $LATEST_WAZUH_VERSION]: " WAZUH_VERSION
+WAZUH_VERSION=${WAZUH_VERSION:-$LATEST_WAZUH_VERSION}
+print_status "Wazuh version set to $WAZUH_VERSION" "INFO"
+
+print_status "Retrieving compatible Elasticsearch version..." "INFO"
+# For Wazuh 4.x, Elasticsearch 7.10.2 is commonly used
+ELASTIC_VERSION="7.10.2"
+print_status "Elasticsearch version set to $ELASTIC_VERSION" "INFO"
+echo ""
+read -p "Press Enter to continue to the next step..."
+
 # Update and Upgrade System Packages
 display_header "Updating and upgrading system packages"
 print_status "Updating package lists..." "INFO"
@@ -149,7 +165,7 @@ display_header "Adding Wazuh repository and GPG key"
 print_status "Adding Wazuh GPG key..." "INFO"
 curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | apt-key add -
 print_status "Adding Wazuh repository..." "INFO"
-echo "deb https://packages.wazuh.com/4.x/apt/ stable main" | tee /etc/apt/sources.list.d/wazuh.list
+echo "deb https://packages.wazuh.com/$WAZUH_VERSION/apt/ stable main" | tee /etc/apt/sources.list.d/wazuh.list
 print_status "Wazuh repository added." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
@@ -174,12 +190,12 @@ print_status "Elasticsearch repository added." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
 
-# Install Elasticsearch OSS 7.10.2
-display_header "Installing Elasticsearch OSS 7.10.2"
+# Install Elasticsearch OSS
+display_header "Installing Elasticsearch OSS $ELASTIC_VERSION"
 print_status "Updating package lists..." "INFO"
 apt-get update
 print_status "Installing Elasticsearch..." "INFO"
-apt-get install -y elasticsearch-oss=7.10.2
+apt-get install -y elasticsearch-oss=$ELASTIC_VERSION
 print_status "Elasticsearch installed." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
@@ -206,10 +222,10 @@ print_status "Elasticsearch service is enabled and running." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
 
-# Install Kibana OSS 7.10.2
-display_header "Installing Kibana OSS 7.10.2"
+# Install Kibana OSS
+display_header "Installing Kibana OSS $ELASTIC_VERSION"
 print_status "Installing Kibana..." "INFO"
-apt-get install -y kibana-oss=7.10.2
+apt-get install -y kibana-oss=$ELASTIC_VERSION
 print_status "Kibana installed." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
@@ -238,7 +254,12 @@ read -p "Press Enter to continue to the next step..."
 # Install Wazuh Elasticsearch Plugin
 display_header "Installing Wazuh Elasticsearch plugin"
 print_status "Installing Wazuh Elasticsearch plugin..." "INFO"
-wget https://packages.wazuh.com/4.x/elasticsearch-plugins/wazuh-elasticsearch-plugin-4.4.0_7.10.2.zip -O /tmp/wazuh-elasticsearch-plugin.zip
+
+# Construct plugin URL based on versions
+WAZUH_PLUGIN_URL="https://packages.wazuh.com/$WAZUH_VERSION/elasticsearch-plugins/wazuh-elasticsearch-plugin-$WAZUH_VERSION_$ELASTIC_VERSION.zip"
+
+print_status "Downloading Wazuh Elasticsearch plugin from $WAZUH_PLUGIN_URL" "INFO"
+wget $WAZUH_PLUGIN_URL -O /tmp/wazuh-elasticsearch-plugin.zip
 /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch file:///tmp/wazuh-elasticsearch-plugin.zip
 print_status "Wazuh Elasticsearch plugin installed." "SUCCESS"
 
@@ -252,7 +273,12 @@ read -p "Press Enter to continue to the next step..."
 # Install Wazuh Kibana Plugin
 display_header "Installing Wazuh Kibana plugin"
 print_status "Installing Wazuh Kibana plugin..." "INFO"
-wget https://packages.wazuh.com/4.x/kibana-plugins/wazuh_kibana-4.4.0_7.10.2.zip -O /tmp/wazuh-kibana-plugin.zip
+
+# Construct plugin URL based on versions
+WAZUH_KIBANA_PLUGIN_URL="https://packages.wazuh.com/$WAZUH_VERSION/kibana-plugins/wazuh_kibana-$WAZUH_VERSION_$ELASTIC_VERSION.zip"
+
+print_status "Downloading Wazuh Kibana plugin from $WAZUH_KIBANA_PLUGIN_URL" "INFO"
+wget $WAZUH_KIBANA_PLUGIN_URL -O /tmp/wazuh-kibana-plugin.zip
 /usr/share/kibana/bin/kibana-plugin install file:///tmp/wazuh-kibana-plugin.zip
 print_status "Wazuh Kibana plugin installed." "SUCCESS"
 
