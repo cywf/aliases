@@ -393,8 +393,8 @@ EOF
 
 # Function to clean up on error
 cleanup_on_error() {
-    local error_code=$1
-    local error_line=$2
+    local error_code=${1:-1}  # Default to 1 if not provided
+    local error_line=${2:-"unknown"}  # Default to "unknown" if not provided
     
     show_banner "error"
     print_status "Installation failed on line $error_line" "ERROR"
@@ -433,67 +433,63 @@ main() {
     if ! check_prerequisites; then
         show_banner "error"
         print_status "Prerequisites check failed" "ERROR"
-        exit 1
+        cleanup_on_error 1 $LINENO
     fi
     
     # Configure network
     if ! configure_network; then
         show_banner "error"
         print_status "Network configuration failed" "ERROR"
-        exit 1
+        cleanup_on_error 1 $LINENO
     fi
     
     # Set up domain
     if ! setup_domain; then
         show_banner "error"
         print_status "Domain setup failed" "ERROR"
-        exit 1
+        cleanup_on_error 1 $LINENO
     fi
     
     # Install Docker
     if ! install_docker; then
         show_banner "error"
         print_status "Docker installation failed" "ERROR"
-        exit 1
+        cleanup_on_error 1 $LINENO
     fi
     
     # Install Docker Compose
     if ! install_docker_compose; then
         show_banner "error"
         print_status "Docker Compose installation failed" "ERROR"
-        exit 1
+        cleanup_on_error 1 $LINENO
     fi
     
     # Generate Docker Compose configuration
     if ! generate_docker_compose; then
         show_banner "error"
         print_status "Failed to generate Docker Compose configuration" "ERROR"
-        cleanup_on_error
-        exit 1
+        cleanup_on_error 1 $LINENO
     fi
     
     # Setup SSL if enabled
     if ! setup_ssl; then
         show_banner "error"
         print_status "SSL setup failed" "ERROR"
-        cleanup_on_error
-        exit 1
+        cleanup_on_error 1 $LINENO
     fi
     
     # Start Wazuh services
     if ! start_wazuh_services; then
         show_banner "error"
         print_status "Failed to start Wazuh services" "ERROR"
-        cleanup_on_error
-        exit 1
+        cleanup_on_error 1 $LINENO
     fi
     
     # Verify installation
     if ! verify_complete_installation; then
         show_banner "error"
         print_status "Installation verification failed" "ERROR"
-        cleanup_on_error
-        exit 1
+        cleanup_on_error 1 $LINENO
     fi
     
     # Save installation details
