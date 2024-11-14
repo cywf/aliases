@@ -54,16 +54,16 @@ server {
     allow 10.6.4.0/22;
     deny all;
 
+    location / {
+        proxy_pass http://localhost:3000;
+        proxy_set_header X-Real-IP \$remote_addr;
+    }
+
     location /cryptpad_websocket {
         proxy_pass http://localhost:3003;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
-    }
-
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_set_header X-Real-IP \$remote_addr;
     }
 }
 EOF
@@ -81,7 +81,7 @@ EOF
     echo "NGINX configured and restarted successfully."
 }
 
-# Function to prompt for additional tools
+# Function to install additional tools
 install_optional_tools() {
     echo "Optional tools available for installation:"
     echo "1) Certbot for Let's Encrypt SSL certificates"
@@ -134,6 +134,15 @@ dns_instructions() {
     echo "Once the DNS records propagate, your server will be accessible via the configured domains."
 }
 
+# Function to display dashboard access instructions
+dashboard_instructions() {
+    echo "Your NGINX setup is complete!"
+    echo "You can access your server as follows:"
+    echo "1) For the main domain, visit: https://$MAIN_DOMAIN"
+    echo "2) For the sandbox domain, visit: https://$SANDBOX_DOMAIN"
+    echo "Ensure you are connected to the ZeroTier network to access these links."
+}
+
 # Main function to orchestrate the setup
 main() {
     echo "Starting NGINX setup..."
@@ -142,6 +151,7 @@ main() {
     configure_nginx
     install_optional_tools
     dns_instructions
+    dashboard_instructions
     echo "Setup complete. Enjoy your configured server!"
 }
 
