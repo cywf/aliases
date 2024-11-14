@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Bash script to automate Wazuh setup with ZeroTier integration
-# with logging, interactive install wizard, and NGINX reverse proxy setup
+# with logging, interactive install wizard, retry mechanism, and NGINX reverse proxy setup
 
 # Enable strict error handling
 set -e
@@ -10,6 +10,7 @@ set -e
 LOG_FILE="wazuh_setup.log"
 START_TIME=$(date)
 step_counter=1
+APT_UPDATE_FAILED=false
 
 # Function to print status messages with colors
 print_status() {
@@ -79,13 +80,33 @@ apt clean
 apt autoremove -y
 rm -rf /var/lib/apt/lists/*
 mkdir -p /var/lib/apt/lists/partial
-apt update || true  # Allow failure for initial update
+
+# Retry mechanism for apt update
+print_status "Updating package lists..." "INFO"
+APT_UPDATE_SUCCESS=false
+for attempt in 1 2; do
+    if apt update; then
+        APT_UPDATE_SUCCESS=true
+        print_status "apt update succeeded on attempt $attempt." "SUCCESS"
+        break
+    else
+        print_status "apt update failed (attempt $attempt)." "ERROR"
+        if [ $attempt -lt 2 ]; then
+            print_status "Retrying apt update..." "INFO"
+            sleep 5  # Wait for 5 seconds before retrying
+        fi
+    fi
+done
+
+if [ "$APT_UPDATE_SUCCESS" = false ]; then
+    print_status "apt update failed after 2 attempts." "ERROR"
+    APT_UPDATE_FAILED=true
+else
+    APT_UPDATE_FAILED=false
+fi
 
 print_status "Fixing broken dependencies (if any)..." "INFO"
 apt install -f -y
-
-print_status "Updating package lists again..." "INFO"
-apt update
 
 print_status "System checks and fixes completed." "SUCCESS"
 echo ""
@@ -106,8 +127,12 @@ read -p "Press Enter to continue to the next step..."
 
 # Update and Upgrade System Packages
 display_header "Updating and upgrading system packages"
-print_status "Updating package lists..." "INFO"
-apt update
+if [ "$APT_UPDATE_FAILED" = false ]; then
+    print_status "Updating package lists..." "INFO"
+    apt update
+else
+    print_status "Skipping apt update due to previous failures." "ERROR"
+fi
 
 print_status "Upgrading installed packages..." "INFO"
 apt upgrade -y
@@ -129,7 +154,7 @@ display_header "Installing Lynis for security auditing"
 print_status "Installing Lynis..." "INFO"
 apt install -y lynis
 print_status "Running Lynis security audit..." "INFO"
-lynis audit system --quick
+lynis audit system --quick || true  # Allow Lynis to fail without exiting the script
 print_status "Lynis security audit completed." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
@@ -190,8 +215,12 @@ read -p "Press Enter to continue to the next step..."
 
 # Update apt and install Wazuh Manager
 display_header "Installing Wazuh Manager"
-print_status "Updating package lists..." "INFO"
-apt update
+if [ "$APT_UPDATE_FAILED" = false ]; then
+    print_status "Updating package lists..." "INFO"
+    apt update || true  # Allow apt update to fail
+else
+    print_status "Skipping apt update due to previous failures." "ERROR"
+fi
 
 print_status "Installing Wazuh Manager..." "INFO"
 apt install -y wazuh-manager
@@ -199,89 +228,101 @@ print_status "Wazuh Manager installed." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
 
-# Add Elasticsearch GPG key and repository
-display_header "Adding Elasticsearch repository and GPG key"
-print_status "Adding Elasticsearch GPG key..." "INFO"
-wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add -
+# Check if apt update failed before proceeding with Elasticsearch installation
+if [ "$APT_UPDATE_FAILED" = false ]; then
+    # Add Elasticsearch GPG key and repository
+    display_header "Adding Elasticsearch repository and GPG key"
+    print_status "Adding Elasticsearch GPG key..." "INFO"
+    wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add -
 
-print_status "Installing apt-transport-https..." "INFO"
-apt install -y apt-transport-https
+    print_status "Installing apt-transport-https..." "INFO"
+    apt install -y apt-transport-https
 
-print_status "Adding Elasticsearch repository..." "INFO"
-echo "deb https://artifacts.elastic.co/packages/$ELASTIC_VERSION/apt stable main" | tee /etc/apt/sources.list.d/elastic-$ELASTIC_VERSION.list
-print_status "Elasticsearch repository added." "SUCCESS"
-echo ""
-read -p "Press Enter to continue to the next step..."
+    print_status "Adding Elasticsearch repository..." "INFO"
+    echo "deb https://artifacts.elastic.co/packages/$ELASTIC_VERSION/apt stable main" | tee /etc/apt/sources.list.d/elastic-$ELASTIC_VERSION.list
+    print_status "Elasticsearch repository added." "SUCCESS"
+    echo ""
+    read -p "Press Enter to continue to the next step..."
 
-# Update apt and install Elasticsearch OSS
-display_header "Installing Elasticsearch OSS $ELASTIC_VERSION"
-print_status "Updating package lists..." "INFO"
-apt update
+    # Update apt and install Elasticsearch OSS
+    display_header "Installing Elasticsearch OSS $ELASTIC_VERSION"
+    print_status "Updating package lists..." "INFO"
+    if apt update; then
+        print_status "Package lists updated successfully." "SUCCESS"
+        print_status "Installing Elasticsearch..." "INFO"
+        apt install -y elasticsearch-oss=$ELASTIC_VERSION
+        print_status "Elasticsearch installed." "SUCCESS"
+        echo ""
+        read -p "Press Enter to continue to the next step..."
+    else
+        print_status "apt update failed while installing Elasticsearch. Skipping Elasticsearch installation." "ERROR"
+        SKIP_ELASTICSEARCH=true
+    fi
+else
+    print_status "apt update failed earlier. Skipping Elasticsearch installation." "ERROR"
+    SKIP_ELASTICSEARCH=true
+fi
 
-print_status "Installing Elasticsearch..." "INFO"
-apt install -y elasticsearch-oss=$ELASTIC_VERSION
-print_status "Elasticsearch installed." "SUCCESS"
-echo ""
-read -p "Press Enter to continue to the next step..."
-
-# Configure Elasticsearch
-display_header "Configuring Elasticsearch"
-print_status "Configuring Elasticsearch settings..." "INFO"
-cat >> /etc/elasticsearch/elasticsearch.yml <<EOL
+# Check if Elasticsearch installation was skipped
+if [ "$SKIP_ELASTICSEARCH" != true ]; then
+    # Configure Elasticsearch
+    display_header "Configuring Elasticsearch"
+    print_status "Configuring Elasticsearch settings..." "INFO"
+    cat >> /etc/elasticsearch/elasticsearch.yml <<EOL
 network.host: 0.0.0.0
 http.port: 9200
 discovery.type: single-node
 EOL
-print_status "Elasticsearch configured." "SUCCESS"
-echo ""
-read -p "Press Enter to continue to the next step..."
+    print_status "Elasticsearch configured." "SUCCESS"
+    echo ""
+    read -p "Press Enter to continue to the next step..."
 
-# Enable and Start Elasticsearch
-display_header "Starting Elasticsearch service"
-print_status "Enabling and starting Elasticsearch..." "INFO"
-systemctl daemon-reload
-systemctl enable elasticsearch
-systemctl start elasticsearch
-print_status "Elasticsearch service is enabled and running." "SUCCESS"
-echo ""
-read -p "Press Enter to continue to the next step..."
+    # Enable and Start Elasticsearch
+    display_header "Starting Elasticsearch service"
+    print_status "Enabling and starting Elasticsearch..." "INFO"
+    systemctl daemon-reload
+    systemctl enable elasticsearch
+    systemctl start elasticsearch
+    print_status "Elasticsearch service is enabled and running." "SUCCESS"
+    echo ""
+    read -p "Press Enter to continue to the next step..."
 
-# Install Kibana OSS
-display_header "Installing Kibana OSS $ELASTIC_VERSION"
-print_status "Installing Kibana..." "INFO"
-apt install -y kibana-oss=$ELASTIC_VERSION
-print_status "Kibana installed." "SUCCESS"
-echo ""
-read -p "Press Enter to continue to the next step..."
+    # Install Kibana OSS
+    display_header "Installing Kibana OSS $ELASTIC_VERSION"
+    print_status "Installing Kibana..." "INFO"
+    apt install -y kibana-oss=$ELASTIC_VERSION
+    print_status "Kibana installed." "SUCCESS"
+    echo ""
+    read -p "Press Enter to continue to the next step..."
 
-# Configure Kibana
-display_header "Configuring Kibana"
-print_status "Configuring Kibana settings..." "INFO"
-cat >> /etc/kibana/kibana.yml <<EOL
+    # Configure Kibana
+    display_header "Configuring Kibana"
+    print_status "Configuring Kibana settings..." "INFO"
+    cat >> /etc/kibana/kibana.yml <<EOL
 server.host: "0.0.0.0"
 elasticsearch.hosts: ["http://localhost:9200"]
 EOL
-print_status "Kibana configured." "SUCCESS"
-echo ""
-read -p "Press Enter to continue to the next step..."
+    print_status "Kibana configured." "SUCCESS"
+    echo ""
+    read -p "Press Enter to continue to the next step..."
 
-# Enable and Start Kibana
-display_header "Starting Kibana service"
-print_status "Enabling and starting Kibana..." "INFO"
-systemctl daemon-reload
-systemctl enable kibana
-systemctl start kibana
-print_status "Kibana service is enabled and running." "SUCCESS"
-echo ""
-read -p "Press Enter to continue to the next step..."
+    # Enable and Start Kibana
+    display_header "Starting Kibana service"
+    print_status "Enabling and starting Kibana..." "INFO"
+    systemctl daemon-reload
+    systemctl enable kibana
+    systemctl start kibana
+    print_status "Kibana service is enabled and running." "SUCCESS"
+    echo ""
+    read -p "Press Enter to continue to the next step..."
 
-# Install NGINX and Configure Reverse Proxy
-display_header "Installing and Configuring NGINX Reverse Proxy"
-print_status "Installing NGINX..." "INFO"
-apt install -y nginx
+    # Install NGINX and Configure Reverse Proxy
+    display_header "Installing and Configuring NGINX Reverse Proxy"
+    print_status "Installing NGINX..." "INFO"
+    apt install -y nginx
 
-print_status "Configuring NGINX as a reverse proxy for Kibana..." "INFO"
-cat > /etc/nginx/sites-available/kibana <<EOL
+    print_status "Configuring NGINX as a reverse proxy for Kibana..." "INFO"
+    cat > /etc/nginx/sites-available/kibana <<EOL
 server {
     listen 5601;
     server_name $ZT_IP;
@@ -297,56 +338,65 @@ server {
 }
 EOL
 
-ln -s /etc/nginx/sites-available/kibana /etc/nginx/sites-enabled/kibana
-rm /etc/nginx/sites-enabled/default
+    ln -s /etc/nginx/sites-available/kibana /etc/nginx/sites-enabled/kibana
+    rm /etc/nginx/sites-enabled/default
 
-print_status "Testing NGINX configuration..." "INFO"
-nginx -t
+    print_status "Testing NGINX configuration..." "INFO"
+    nginx -t
 
-print_status "Restarting NGINX..." "INFO"
-systemctl restart nginx
+    print_status "Restarting NGINX..." "INFO"
+    systemctl restart nginx
 
-print_status "NGINX is configured as a reverse proxy for Kibana." "SUCCESS"
-echo ""
-read -p "Press Enter to continue to the next step..."
+    print_status "NGINX is configured as a reverse proxy for Kibana." "SUCCESS"
+    echo ""
+    read -p "Press Enter to continue to the next step..."
 
-# Install Wazuh Elasticsearch Plugin
-display_header "Installing Wazuh Elasticsearch plugin"
-print_status "Installing Wazuh Elasticsearch plugin..." "INFO"
+    # Install Wazuh Elasticsearch Plugin
+    display_header "Installing Wazuh Elasticsearch plugin"
+    print_status "Installing Wazuh Elasticsearch plugin..." "INFO"
 
-# Construct plugin URL based on versions
-WAZUH_PLUGIN_URL="https://packages.wazuh.com/$WAZUH_VERSION/elasticsearch-plugins/wazuh-elasticsearch-plugin-$WAZUH_VERSION_$ELASTIC_VERSION.zip"
+    # Construct plugin URL based on versions
+    WAZUH_PLUGIN_URL="https://packages.wazuh.com/$WAZUH_VERSION/elasticsearch-plugins/wazuh-elasticsearch-plugin-$WAZUH_VERSION_$ELASTIC_VERSION.zip"
 
-print_status "Downloading Wazuh Elasticsearch plugin from $WAZUH_PLUGIN_URL" "INFO"
-wget $WAZUH_PLUGIN_URL -O /tmp/wazuh-elasticsearch-plugin.zip
-/usr/share/elasticsearch/bin/elasticsearch-plugin install --batch file:///tmp/wazuh-elasticsearch-plugin.zip
-print_status "Wazuh Elasticsearch plugin installed." "SUCCESS"
+    print_status "Downloading Wazuh Elasticsearch plugin from $WAZUH_PLUGIN_URL" "INFO"
+    if wget $WAZUH_PLUGIN_URL -O /tmp/wazuh-elasticsearch-plugin.zip; then
+        /usr/share/elasticsearch/bin/elasticsearch-plugin install --batch file:///tmp/wazuh-elasticsearch-plugin.zip
+        print_status "Wazuh Elasticsearch plugin installed." "SUCCESS"
 
-# Restart Elasticsearch
-print_status "Restarting Elasticsearch..." "INFO"
-systemctl restart elasticsearch
-print_status "Elasticsearch restarted." "SUCCESS"
-echo ""
-read -p "Press Enter to continue to the next step..."
+        # Restart Elasticsearch
+        print_status "Restarting Elasticsearch..." "INFO"
+        systemctl restart elasticsearch
+        print_status "Elasticsearch restarted." "SUCCESS"
+    else
+        print_status "Failed to download Wazuh Elasticsearch plugin. Skipping plugin installation." "ERROR"
+    fi
+    echo ""
+    read -p "Press Enter to continue to the next step..."
 
-# Install Wazuh Kibana Plugin
-display_header "Installing Wazuh Kibana plugin"
-print_status "Installing Wazuh Kibana plugin..." "INFO"
+    # Install Wazuh Kibana Plugin
+    display_header "Installing Wazuh Kibana plugin"
+    print_status "Installing Wazuh Kibana plugin..." "INFO"
 
-# Construct plugin URL based on versions
-WAZUH_KIBANA_PLUGIN_URL="https://packages.wazuh.com/$WAZUH_VERSION/kibana-plugins/wazuh_kibana-$WAZUH_VERSION_$ELASTIC_VERSION.zip"
+    # Construct plugin URL based on versions
+    WAZUH_KIBANA_PLUGIN_URL="https://packages.wazuh.com/$WAZUH_VERSION/kibana-plugins/wazuh_kibana-$WAZUH_VERSION_$ELASTIC_VERSION.zip"
 
-print_status "Downloading Wazuh Kibana plugin from $WAZUH_KIBANA_PLUGIN_URL" "INFO"
-wget $WAZUH_KIBANA_PLUGIN_URL -O /tmp/wazuh-kibana-plugin.zip
-/usr/share/kibana/bin/kibana-plugin install file:///tmp/wazuh-kibana-plugin.zip
-print_status "Wazuh Kibana plugin installed." "SUCCESS"
+    print_status "Downloading Wazuh Kibana plugin from $WAZUH_KIBANA_PLUGIN_URL" "INFO"
+    if wget $WAZUH_KIBANA_PLUGIN_URL -O /tmp/wazuh-kibana-plugin.zip; then
+        /usr/share/kibana/bin/kibana-plugin install file:///tmp/wazuh-kibana-plugin.zip
+        print_status "Wazuh Kibana plugin installed." "SUCCESS"
 
-# Restart Kibana
-print_status "Restarting Kibana..." "INFO"
-systemctl restart kibana
-print_status "Kibana restarted." "SUCCESS"
-echo ""
-read -p "Press Enter to continue to the next step..."
+        # Restart Kibana
+        print_status "Restarting Kibana..." "INFO"
+        systemctl restart kibana
+        print_status "Kibana restarted." "SUCCESS"
+    else
+        print_status "Failed to download Wazuh Kibana plugin. Skipping plugin installation." "ERROR"
+    fi
+    echo ""
+    read -p "Press Enter to continue to the next step..."
+else
+    print_status "Skipping Elasticsearch, Kibana, and related plugins due to apt update failures." "ERROR"
+fi
 
 # Start and Enable Wazuh Manager
 display_header "Starting Wazuh Manager service"
@@ -362,12 +412,18 @@ read -p "Press Enter to continue to the next step..."
 display_header "Verifying service statuses"
 print_status "Checking Wazuh Manager status..." "INFO"
 systemctl status wazuh-manager --no-pager || true
-print_status "Checking Elasticsearch status..." "INFO"
-systemctl status elasticsearch --no-pager || true
-print_status "Checking Kibana status..." "INFO"
-systemctl status kibana --no-pager || true
-print_status "Checking NGINX status..." "INFO"
-systemctl status nginx --no-pager || true
+
+if [ "$SKIP_ELASTICSEARCH" != true ]; then
+    print_status "Checking Elasticsearch status..." "INFO"
+    systemctl status elasticsearch --no-pager || true
+    print_status "Checking Kibana status..." "INFO"
+    systemctl status kibana --no-pager || true
+    print_status "Checking NGINX status..." "INFO"
+    systemctl status nginx --no-pager || true
+else
+    print_status "Elasticsearch, Kibana, and NGINX were skipped due to previous errors." "ERROR"
+fi
+
 print_status "Service status verification completed." "SUCCESS"
 echo ""
 read -p "Press Enter to finish the installation..."
@@ -377,9 +433,16 @@ display_header "Installation Complete"
 END_TIME=$(date)
 print_status "Installation completed at $END_TIME" "SUCCESS"
 echo ""
-print_status "You can access the Wazuh dashboard via Kibana at: http://$ZT_IP:5601" "INFO"
-print_status "Alternatively, access it through the NGINX reverse proxy at: http://$ZT_IP:5601" "INFO"
-print_status "Note: Ensure that the necessary ports are open and accessible over your ZeroTier network." "INFO"
-print_status "You may need to configure your firewall to allow traffic on port 5601 and 9200." "INFO"
+
+if [ "$SKIP_ELASTICSEARCH" != true ]; then
+    print_status "You can access the Wazuh dashboard via Kibana at: http://$ZT_IP:5601" "INFO"
+    print_status "Alternatively, access it through the NGINX reverse proxy at: http://$ZT_IP:5601" "INFO"
+    print_status "Note: Ensure that the necessary ports are open and accessible over your ZeroTier network." "INFO"
+    print_status "You may need to configure your firewall to allow traffic on port 5601 and 9200." "INFO"
+else
+    print_status "Elasticsearch and Kibana were not installed due to apt update failures." "ERROR"
+    print_status "Please resolve the apt update issues and re-run the script to install Elasticsearch and Kibana." "INFO"
+fi
+
 echo ""
 print_status "Thank you for using the Wazuh + ZeroTier Install Wizard!" "SUCCESS"
