@@ -88,7 +88,7 @@ check_system_state() {
     local services=("elasticsearch" "kibana" "wazuh-manager" "filebeat" "zerotier-one")
     for service in "${services[@]}"; do
         if systemctl is-active --quiet "$service" 2>/dev/null; then
-            print_status "Stopping $service service..." "INFO"
+            print_status "Stopping $service..." "INFO"
             systemctl stop "$service" || true
         fi
     done
@@ -163,6 +163,10 @@ install_zerotier() {
     systemctl enable zerotier-one
     systemctl start zerotier-one
     
+    # Wait for service to be fully operational
+    print_status "Waiting for ZeroTier service to be ready..." "INFO"
+    sleep 10
+    
     return 0
 }
 
@@ -201,10 +205,17 @@ install_wazuh_manager() {
         return 1
     fi
     
+    # Wait for initial installation to complete
+    sleep 10
+    
     # Enable and start service
     systemctl daemon-reload
     systemctl enable wazuh-manager
     systemctl start wazuh-manager
+    
+    # Wait for service to be fully operational
+    print_status "Waiting for Wazuh Manager to be ready..." "INFO"
+    sleep 30
     
     # Verify installation
     if ! systemctl is-active --quiet wazuh-manager; then
@@ -221,11 +232,42 @@ configure_wazuh_api() {
     
     print_status "Configuring Wazuh API..." "INFO"
     
-    # Create API user with retry
-    if ! retry_command "/var/ossec/bin/wazuh-users add wazuh-admin -p \"$password\"" "Creating Wazuh API user"; then
+    # Wait for API to be ready
+    print_status "Waiting for Wazuh API to be ready..." "INFO"
+    sleep 10  # Give the service time to fully start
+    
+    # Check if the user management tool exists and determine version
+    if [ -f "/var/ossec/bin/wazuh-user" ]; then
+        # New version (4.x+)
+        print_status "Using Wazuh 4.x+ user management..." "INFO"
+        if ! retry_command "/var/ossec/bin/wazuh-user create wazuh-admin -p \"$password\" -a" "Creating Wazuh API user"; then
+            return 1
+        fi
+    elif [ -f "/var/ossec/bin/wazuh-users" ]; then
+        # Old version (3.x)
+        print_status "Using Wazuh 3.x user management..." "INFO"
+        if ! retry_command "/var/ossec/bin/wazuh-users add wazuh-admin -p \"$password\"" "Creating Wazuh API user"; then
+            return 1
+        fi
+    else
+        print_status "Wazuh user management tool not found. Please check your installation." "ERROR"
         return 1
     fi
     
+    # Restart Wazuh Manager to apply changes
+    print_status "Restarting Wazuh Manager..." "INFO"
+    systemctl restart wazuh-manager
+    
+    # Wait for the service to be fully up
+    sleep 15
+    
+    # Verify the service is running
+    if ! systemctl is-active --quiet wazuh-manager; then
+        print_status "Wazuh Manager failed to restart after API configuration" "ERROR"
+        return 1
+    fi
+    
+    print_status "Wazuh API configured successfully" "SUCCESS"
     return 0
 }
 
@@ -272,6 +314,34 @@ uninstall_wazuh() {
     print_status "Wazuh uninstallation completed." "SUCCESS"
 }
 
+# Function to verify installation
+verify_installation() {
+    local zt_ip="$1"
+    
+    print_status "Verifying installation..." "INFO"
+    
+    # Check Wazuh Manager service
+    if ! systemctl is-active --quiet wazuh-manager; then
+        print_status "Wazuh Manager service is not running" "ERROR"
+        return 1
+    fi
+    
+    # Check ZeroTier connection
+    if ! zerotier-cli info | grep -q "ONLINE"; then
+        print_status "ZeroTier is not online" "ERROR"
+        return 1
+    fi
+    
+    # Try to curl the API (allowing self-signed certificates)
+    if ! curl -k -s -o /dev/null "https://${zt_ip}:55000"; then
+        print_status "Unable to reach Wazuh API" "ERROR"
+        return 1
+    fi
+    
+    print_status "Installation verification completed successfully" "SUCCESS"
+    return 0
+}
+
 # Trap errors
 trap 'error_exit ${LINENO} "$BASH_COMMAND"' ERR
 
@@ -285,6 +355,15 @@ if [ "$EUID" -ne 0 ]; then
     print_status "This script must be run as root. Please run 'sudo bash $0'" "ERROR"
     exit 1
 fi
+
+# Check for required commands
+for cmd in curl wget jq systemctl; do
+    if ! command -v "$cmd" &> /dev/null; then
+        print_status "Required command '$cmd' not found. Installing essential packages..." "INFO"
+        apt update && apt install -y curl wget jq systemd
+        break
+    fi
+done
 
 # Display welcome message
 display_header "Welcome to the Wazuh-Wizard"
@@ -313,9 +392,11 @@ esac
 
 if [ "$ACTION" == "install" ]; then
     # Perform system checks and preparation
+    display_header "System Preparation"
     check_system_state
     
     # Get and validate versions
+    display_header "Version Selection"
     while true; do
         read -p "Enter Wazuh version (e.g., 4.9.2): " WAZUH_VERSION
         read -p "Enter Elasticsearch version (e.g., 8.16.0): " ELASTIC_VERSION
@@ -323,21 +404,25 @@ if [ "$ACTION" == "install" ]; then
         if validate_versions "$WAZUH_VERSION" "$ELASTIC_VERSION"; then
             break
         fi
+        print_status "Please try again with valid version numbers." "INFO"
     done
     
     # Setup repositories
+    display_header "Repository Setup"
     if ! setup_repositories "$WAZUH_VERSION"; then
         print_status "Failed to setup repositories. Exiting." "ERROR"
         exit 1
     fi
     
     # Install and configure ZeroTier
+    display_header "ZeroTier Installation"
     if ! install_zerotier; then
         print_status "Failed to install ZeroTier. Exiting." "ERROR"
         exit 1
     fi
     
     # Get ZeroTier network ID and configure
+    display_header "ZeroTier Configuration"
     read -p "Enter your ZeroTier Network ID: " ZT_NETWORK_ID
     ZT_IP=$(configure_zerotier "$ZT_NETWORK_ID")
     if [ $? -ne 0 ]; then
@@ -346,12 +431,14 @@ if [ "$ACTION" == "install" ]; then
     fi
     
     # Install Wazuh Manager
+    display_header "Wazuh Manager Installation"
     if ! install_wazuh_manager "$WAZUH_VERSION"; then
         print_status "Failed to install Wazuh Manager. Exiting." "ERROR"
         exit 1
     fi
     
     # Configure Wazuh API
+    display_header "Wazuh API Configuration"
     read -s -p "Enter a password for the Wazuh API user 'wazuh-admin': " WAZUH_PASSWORD
     echo ""
     if ! configure_wazuh_api "$WAZUH_PASSWORD"; then
@@ -359,8 +446,16 @@ if [ "$ACTION" == "install" ]; then
         exit 1
     fi
     
+    # Verify installation
+    display_header "Installation Verification"
+    if ! verify_installation "$ZT_IP"; then
+        print_status "Installation verification failed. Please check the logs for details." "ERROR"
+        exit 1
+    fi
+    
     # Installation complete
     END_TIME=$(date)
+    display_header "Installation Complete"
     print_status "Installation completed successfully at $END_TIME" "SUCCESS"
     echo ""
     print_status "Access Information:" "INFO"
@@ -368,9 +463,11 @@ if [ "$ACTION" == "install" ]; then
     print_status "Username: wazuh-admin" "INFO"
     print_status "ZeroTier Network ID: $ZT_NETWORK_ID" "INFO"
     print_status "ZeroTier IP: $ZT_IP" "INFO"
+    print_status "Log file location: $LOG_FILE" "INFO"
     
 elif [ "$ACTION" == "uninstall" ]; then
     # Perform uninstallation
+    display_header "Uninstallation"
     uninstall_wazuh
 fi
 
