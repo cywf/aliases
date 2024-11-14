@@ -74,17 +74,14 @@ read -p "Press Enter to continue..."
 
 # Ask for Wazuh and Elasticsearch versions
 display_header "Specify Wazuh and Elasticsearch Versions"
-print_status "Retrieving the latest Wazuh version..." "INFO"
-LATEST_WAZUH_VERSION=$(curl -s https://packages.wazuh.com/ | grep -oP 'href="(\d+\.\d+\.\d+)/"' | grep -oP '\d+\.\d+\.\d+' | sort -V | tail -n1)
-print_status "Latest Wazuh version is $LATEST_WAZUH_VERSION" "SUCCESS"
-read -p "Enter the Wazuh version to install [default: $LATEST_WAZUH_VERSION]: " WAZUH_VERSION
-WAZUH_VERSION=${WAZUH_VERSION:-$LATEST_WAZUH_VERSION}
-print_status "Wazuh version set to $WAZUH_VERSION" "INFO"
+print_status "Please enter the Wazuh version you wish to install (e.g., 4.9.2):" "INFO"
+read -p "Wazuh Version: " WAZUH_VERSION
 
-print_status "Retrieving compatible Elasticsearch version..." "INFO"
-# For Wazuh 4.x, Elasticsearch 7.10.2 is commonly used
-ELASTIC_VERSION="7.10.2"
-print_status "Elasticsearch version set to $ELASTIC_VERSION" "INFO"
+print_status "Please enter the Elasticsearch version compatible with Wazuh $WAZUH_VERSION (e.g., 8.16.0):" "INFO"
+read -p "Elasticsearch Version: " ELASTIC_VERSION
+
+print_status "Wazuh version set to $WAZUH_VERSION" "SUCCESS"
+print_status "Elasticsearch version set to $ELASTIC_VERSION" "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
 
@@ -185,7 +182,7 @@ display_header "Adding Elasticsearch repository and GPG key"
 print_status "Adding Elasticsearch GPG key..." "INFO"
 wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add -
 print_status "Adding Elasticsearch repository..." "INFO"
-echo "deb https://artifacts.elastic.co/packages/oss-7.x/apt stable main" | tee /etc/apt/sources.list.d/elastic-7.x.list
+echo "deb https://artifacts.elastic.co/packages/oss-$ELASTIC_VERSION/apt stable main" | tee /etc/apt/sources.list.d/elastic-$ELASTIC_VERSION.list
 print_status "Elasticsearch repository added." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
