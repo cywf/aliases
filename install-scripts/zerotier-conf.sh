@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ZeroTier IPv4 NAT Router Configuration Script
-# Updated to handle iptables-persistent setup first
+# Includes option to allow outgoing traffic for common ports
 
 # Colors for output
 GREEN="\033[1;32m"
@@ -68,11 +68,7 @@ echo -e "ZeroTier Network ID: ${ZT_NETWORK_ID}"
 echo -e "Gateway IP: ${ZT_GATEWAY_IP}"
 echo -e "Network IP range: ${ZT_NETWORK_IP}"
 
-read -p "Proceed with this configuration? (yes/no): " CONFIRM
-if [[ "$CONFIRM" != "yes" ]]; then
-  echo -e "${RED}Configuration aborted.${NC}"
-  exit 1
-fi
+read -p "Would you like to allow outgoing traffic on common ports (80, 443)? (yes/no): " ALLOW_COMMON_PORTS
 
 # Configure iptables
 echo -e "${GREEN}Configuring iptables rules...${NC}"
@@ -84,6 +80,18 @@ iptables -A FORWARD -i $ZT_INTERFACE -s $ZT_NETWORK_IP -d 0.0.0.0/0 -j ACCEPT
 iptables -A FORWARD -i eth0 -s 0.0.0.0/0 -d $ZT_NETWORK_IP -j ACCEPT
 iptables -A INPUT -i $ZT_INTERFACE -s $ZT_NETWORK_IP -j ACCEPT
 iptables -A INPUT -i lo -j ACCEPT
+
+# Handle outgoing traffic for common ports
+if [[ "$ALLOW_COMMON_PORTS" == "yes" ]]; then
+  echo -e "${GREEN}Allowing outgoing traffic on ports 80 and 443...${NC}"
+  iptables -A OUTPUT -p tcp --dport 80 -j ACCEPT
+  iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
+  iptables -A OUTPUT -p udp --dport 53 -j ACCEPT # For DNS
+else
+  echo -e "${RED}Blocking outgoing traffic except for essential services.${NC}"
+  iptables -A OUTPUT -o $ZT_INTERFACE -j DROP
+fi
+
 iptables -A INPUT -j DROP
 
 # Save iptables rules
