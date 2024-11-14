@@ -179,63 +179,73 @@ check_prerequisites() {
     return 0
 }
 
-# Function to setup SSL
-setup_ssl() {
-    if [ "$USE_SSL" = false ]; then
-        return 0
-    fi
+# Function to generate Docker Compose configuration
+generate_docker_compose() {
+    update_progress "Generating Docker Compose Configuration"
     
-    print_status "Setting up SSL certificates..." "INFO"
+    local install_dir="/opt/wazuh-docker"
+    mkdir -p "$install_dir"
     
-    local cert_dir="/opt/wazuh-docker/certs"
-    mkdir -p "$cert_dir"
+    cat > "$install_dir/docker-compose.yml" << EOF
+version: '3.8'
+services:
+  wazuh:
+    image: wazuh/wazuh-manager:latest
+    ports:
+      - "1514:1514"
+      - "1515:1515"
+      - "514:514/udp"
+      - "55000:55000"
+    environment:
+      - WAZUH_PASSWORD=admin
+    volumes:
+      - wazuh_data:/var/ossec
+    networks:
+      - wazuh-network
+
+  elasticsearch:
+    image: wazuh/wazuh-elasticsearch:latest
+    environment:
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    volumes:
+      - elastic_data:/usr/share/elasticsearch/data
+    networks:
+      - wazuh-network
+
+  kibana:
+    image: wazuh/wazuh-kibana:latest
+    ports:
+      - "5601:5601"
+    networks:
+      - wazuh-network
+
+volumes:
+  wazuh_data:
+  elastic_data:
+
+networks:
+  wazuh-network:
+EOF
     
-    if [ "$USE_CLOUDFLARE" = true ]; then
-        setup_cloudflare_ssl "$cert_dir"
-    else
-        setup_letsencrypt_ssl "$cert_dir"
-    fi
-    
-    return $?
+    print_status "Docker Compose configuration generated" "SUCCESS"
+    return 0
 }
 
-# Function to setup Let's Encrypt SSL
-setup_letsencrypt_ssl() {
-    local cert_dir="$1"
+# Function to setup SSL
+setup_ssl() {
+    update_progress "Setting up SSL"
     
-    print_status "Setting up Let's Encrypt SSL..." "INFO"
-    
-    # Install certbot if not present
-    if ! command -v certbot &>/dev/null; then
-        print_status "Installing certbot..." "INFO"
-        apt-get update
-        apt-get install -y certbot
-    fi
-    
-    # Get certificate
-    certbot certonly --standalone \
-        --non-interactive \
-        --agree-tos \
-        --email "$EMAIL" \
-        --domain "$DOMAIN" \
-        --preferred-challenges http || {
-        print_status "Failed to obtain SSL certificate" "ERROR"
-        return 1
-    }
-    
-    # Copy certificates to cert directory
-    cp /etc/letsencrypt/live/"$DOMAIN"/fullchain.pem "$cert_dir/server.crt"
-    cp /etc/letsencrypt/live/"$DOMAIN"/privkey.pem "$cert_dir/server.key"
-    
-    print_status "SSL certificates installed" "SUCCESS"
+    # Placeholder for SSL setup logic
+    print_status "SSL setup is not implemented yet" "WARNING"
     return 0
 }
 
 # Function to start Wazuh services
 start_wazuh_services() {
-    print_status "Starting Wazuh services..." "INFO"
+    update_progress "Starting Wazuh Services"
     
-    cd /opt/wazuh-docker
+    local install_dir="/opt/wazuh-docker"
+    cd "$install_dir"
     
     # Pull images first
     print_status "Pulling Docker images..." "INFO"
@@ -355,7 +365,8 @@ cleanup_on_error() {
     local error_code=$1
     local error_line=$2
     
-    show_error_banner "Installation failed on line $error_line"
+    show_banner "error"
+    print_status "Installation failed on line $error_line" "ERROR"
     print_status "Performing cleanup..." "INFO"
     
     # Stop and remove containers
@@ -389,14 +400,24 @@ main() {
     
     # Check prerequisites
     if ! check_prerequisites; then
-        show_error_banner "Prerequisites check failed"
+        show_banner "error"
+        print_status "Prerequisites check failed" "ERROR"
+        exit 1
+    fi
+    
+    # Generate Docker Compose configuration
+    if ! generate_docker_compose; then
+        show_banner "error"
+        print_status "Failed to generate Docker Compose configuration" "ERROR"
+        cleanup_on_error
         exit 1
     fi
     
     # Setup SSL if enabled
     if [ "$USE_SSL" = true ]; then
         if ! setup_ssl; then
-            show_error_banner "SSL setup failed"
+            show_banner "error"
+            print_status "SSL setup failed" "ERROR"
             cleanup_on_error
             exit 1
         fi
@@ -404,7 +425,8 @@ main() {
     
     # Start Wazuh services
     if ! start_wazuh_services; then
-        show_error_banner "Failed to start Wazuh services"
+        show_banner "error"
+        print_status "Failed to start Wazuh services" "ERROR"
         cleanup_on_error
         exit 1
     fi
