@@ -69,15 +69,18 @@ read -p "Press Enter to continue once authorized..."
 
 # Retrieve ZeroTier IP Address
 echo "Retrieving ZeroTier IP address..."
-ZT_IP=""
-while [ -z "$ZT_IP" ]; do
-    ZT_IP=$(zerotier-cli listnetworks -j | jq -r '.[] | select(.nwid=="'$ZT_NETWORK_ID'") | .assignedAddresses[0]' | cut -d'/' -f1)
+ZT_IP=$(zerotier-cli listnetworks -j | jq -r '.[] | select(.nwid=="'$ZT_NETWORK_ID'") | .assignedAddresses[0]' | cut -d'/' -f1)
+
+if [ -z "$ZT_IP" ]; then
+    echo "Could not automatically retrieve your ZeroTier IP address."
+    read -p "If you know your ZeroTier IP address, please enter it now (or press Enter to exit): " ZT_IP
     if [ -z "$ZT_IP" ]; then
-        echo "Waiting for ZeroTier IP assignment..."
-        sleep 5
+        echo "ZeroTier IP address is required for configuration. Exiting."
+        exit 1
     fi
-done
-echo "ZeroTier IP address is $ZT_IP"
+else
+    echo "ZeroTier IP address is $ZT_IP"
+fi
 
 # Ensure ZeroTier service is enabled and running
 echo "Enabling and starting ZeroTier service..."
