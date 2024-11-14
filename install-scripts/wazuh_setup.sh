@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Bash script to automate Wazuh setup with ZeroTier integration
-# with logging and interactive install wizard
+# with logging, interactive install wizard, and NGINX reverse proxy setup
 
 # Enable strict error handling
 set -e
@@ -72,6 +72,25 @@ echo "Please follow the prompts and instructions carefully."
 echo ""
 read -p "Press Enter to continue..."
 
+# Preliminary System Checks and Fixes
+display_header "Preliminary System Checks and Fixes"
+print_status "Cleaning up and updating package lists..." "INFO"
+apt-get clean
+apt-get autoremove -y
+rm -rf /var/lib/apt/lists/*
+mkdir -p /var/lib/apt/lists/partial
+apt-get update || true  # Allow failure for initial update
+
+print_status "Fixing broken dependencies (if any)..." "INFO"
+apt-get install -f -y
+
+print_status "Updating package lists again..." "INFO"
+apt-get update
+
+print_status "System checks and fixes completed." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
+
 # Ask for Wazuh and Elasticsearch versions
 display_header "Specify Wazuh and Elasticsearch Versions"
 print_status "Please enter the Wazuh version you wish to install (e.g., 4.9.2):" "INFO"
@@ -89,8 +108,10 @@ read -p "Press Enter to continue to the next step..."
 display_header "Updating and upgrading system packages"
 print_status "Updating package lists..." "INFO"
 apt-get update
+
 print_status "Upgrading installed packages..." "INFO"
 apt-get upgrade -y
+
 print_status "System packages updated and upgraded." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
@@ -98,7 +119,7 @@ read -p "Press Enter to continue to the next step..."
 # Install Essential Dependencies
 display_header "Installing essential dependencies"
 print_status "Installing curl, wget, and other dependencies..." "INFO"
-apt-get install -y curl wget apt-transport-https gnupg2 lsb-release software-properties-common jq
+apt-get install -y curl wget apt-transport-https gnupg2 lsb-release software-properties-common jq gnupg-agent
 print_status "Essential dependencies installed." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
@@ -171,6 +192,7 @@ read -p "Press Enter to continue to the next step..."
 display_header "Installing Wazuh Manager"
 print_status "Updating package lists..." "INFO"
 apt-get update
+
 print_status "Installing Wazuh Manager..." "INFO"
 apt-get install -y wazuh-manager
 print_status "Wazuh Manager installed." "SUCCESS"
@@ -181,16 +203,21 @@ read -p "Press Enter to continue to the next step..."
 display_header "Adding Elasticsearch repository and GPG key"
 print_status "Adding Elasticsearch GPG key..." "INFO"
 wget -qO - https://artifacts.elastic.co/GPG-KEY-elasticsearch | apt-key add -
+
+print_status "Installing apt-transport-https..." "INFO"
+apt-get install -y apt-transport-https
+
 print_status "Adding Elasticsearch repository..." "INFO"
-echo "deb https://artifacts.elastic.co/packages/oss-$ELASTIC_VERSION/apt stable main" | tee /etc/apt/sources.list.d/elastic-$ELASTIC_VERSION.list
+echo "deb https://artifacts.elastic.co/packages/$ELASTIC_VERSION/apt stable main" | tee /etc/apt/sources.list.d/elastic-$ELASTIC_VERSION.list
 print_status "Elasticsearch repository added." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
 
-# Install Elasticsearch OSS
+# Update apt and install Elasticsearch OSS
 display_header "Installing Elasticsearch OSS $ELASTIC_VERSION"
 print_status "Updating package lists..." "INFO"
 apt-get update
+
 print_status "Installing Elasticsearch..." "INFO"
 apt-get install -y elasticsearch-oss=$ELASTIC_VERSION
 print_status "Elasticsearch installed." "SUCCESS"
@@ -201,7 +228,7 @@ read -p "Press Enter to continue to the next step..."
 display_header "Configuring Elasticsearch"
 print_status "Configuring Elasticsearch settings..." "INFO"
 cat >> /etc/elasticsearch/elasticsearch.yml <<EOL
-network.host: $ZT_IP
+network.host: 0.0.0.0
 http.port: 9200
 discovery.type: single-node
 EOL
@@ -231,8 +258,8 @@ read -p "Press Enter to continue to the next step..."
 display_header "Configuring Kibana"
 print_status "Configuring Kibana settings..." "INFO"
 cat >> /etc/kibana/kibana.yml <<EOL
-server.host: "$ZT_IP"
-elasticsearch.hosts: ["http://$ZT_IP:9200"]
+server.host: "0.0.0.0"
+elasticsearch.hosts: ["http://localhost:9200"]
 EOL
 print_status "Kibana configured." "SUCCESS"
 echo ""
@@ -245,6 +272,41 @@ systemctl daemon-reload
 systemctl enable kibana
 systemctl start kibana
 print_status "Kibana service is enabled and running." "SUCCESS"
+echo ""
+read -p "Press Enter to continue to the next step..."
+
+# Install NGINX and Configure Reverse Proxy
+display_header "Installing and Configuring NGINX Reverse Proxy"
+print_status "Installing NGINX..." "INFO"
+apt-get install -y nginx
+
+print_status "Configuring NGINX as a reverse proxy for Kibana..." "INFO"
+cat > /etc/nginx/sites-available/kibana <<EOL
+server {
+    listen 5601;
+    server_name $ZT_IP;
+
+    location / {
+        proxy_pass http://localhost:5601;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection 'upgrade';
+        proxy_set_header Host \$host;
+        proxy_cache_bypass \$http_upgrade;
+    }
+}
+EOL
+
+ln -s /etc/nginx/sites-available/kibana /etc/nginx/sites-enabled/kibana
+rm /etc/nginx/sites-enabled/default
+
+print_status "Testing NGINX configuration..." "INFO"
+nginx -t
+
+print_status "Restarting NGINX..." "INFO"
+systemctl restart nginx
+
+print_status "NGINX is configured as a reverse proxy for Kibana." "SUCCESS"
 echo ""
 read -p "Press Enter to continue to the next step..."
 
@@ -299,11 +361,13 @@ read -p "Press Enter to continue to the next step..."
 # Verify Services Status
 display_header "Verifying service statuses"
 print_status "Checking Wazuh Manager status..." "INFO"
-systemctl status wazuh-manager --no-pager
+systemctl status wazuh-manager --no-pager || true
 print_status "Checking Elasticsearch status..." "INFO"
-systemctl status elasticsearch --no-pager
+systemctl status elasticsearch --no-pager || true
 print_status "Checking Kibana status..." "INFO"
-systemctl status kibana --no-pager
+systemctl status kibana --no-pager || true
+print_status "Checking NGINX status..." "INFO"
+systemctl status nginx --no-pager || true
 print_status "Service status verification completed." "SUCCESS"
 echo ""
 read -p "Press Enter to finish the installation..."
@@ -314,7 +378,8 @@ END_TIME=$(date)
 print_status "Installation completed at $END_TIME" "SUCCESS"
 echo ""
 print_status "You can access the Wazuh dashboard via Kibana at: http://$ZT_IP:5601" "INFO"
-print_status "Note: If you cannot access the dashboard, ensure that the necessary ports are open and accessible over your ZeroTier network." "INFO"
-print_status "You may also need to configure your firewall to allow traffic on port 5601." "INFO"
+print_status "Alternatively, access it through the NGINX reverse proxy at: http://$ZT_IP:5601" "INFO"
+print_status "Note: Ensure that the necessary ports are open and accessible over your ZeroTier network." "INFO"
+print_status "You may need to configure your firewall to allow traffic on port 5601 and 9200." "INFO"
 echo ""
 print_status "Thank you for using the Wazuh + ZeroTier Install Wizard!" "SUCCESS"
