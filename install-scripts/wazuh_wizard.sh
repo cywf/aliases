@@ -1,8 +1,7 @@
 #!/bin/bash
 
-# Bash script to automate Wazuh setup with ZeroTier integration
-# Includes options to install or uninstall Wazuh
-# with logging, interactive install wizard, retry mechanism, and comprehensive error handling
+# Enhanced Wazuh setup script with Docker support, domain management, and improved error handling
+# Includes options for traditional or container-based installation
 
 # Enable strict error handling
 set -e
@@ -13,23 +12,34 @@ START_TIME=$(date)
 step_counter=1
 MAX_RETRIES=3
 TIMEOUT_BETWEEN_RETRIES=5
+DOCKER_COMPOSE_VERSION="2.21.0"  # Specify the desired version
+
+# Installation type (will be set by user choice)
+INSTALL_TYPE=""
+
+# Domain-related variables
+DOMAIN=""
+EMAIL=""
+USE_SSL=false
 
 # Colors for output
 COLOR_INFO="\e[34m"    # Blue
 COLOR_SUCCESS="\e[32m" # Green
 COLOR_ERROR="\e[31m"   # Red
+COLOR_WARNING="\e[33m" # Yellow
 COLOR_RESET="\e[0m"    # Reset
 
 # Function to print status messages with colors
 print_status() {
     local message="$1"
-    local type="$2"  # INFO, SUCCESS, ERROR
+    local type="$2"  # INFO, SUCCESS, ERROR, WARNING
     local color=""
     case "$type" in
-        INFO)    color="$COLOR_INFO" ;;
-        SUCCESS) color="$COLOR_SUCCESS" ;;
-        ERROR)   color="$COLOR_ERROR" ;;
-        *)       color="$COLOR_RESET" ;;
+        INFO)     color="$COLOR_INFO" ;;
+        SUCCESS)  color="$COLOR_SUCCESS" ;;
+        ERROR)    color="$COLOR_ERROR" ;;
+        WARNING)  color="$COLOR_WARNING" ;;
+        *)        color="$COLOR_RESET" ;;
     esac
     echo -e "${color}[$(date +"%Y-%m-%d %H:%M:%S")] $message${COLOR_RESET}"
     echo "[$(date +"%Y-%m-%d %H:%M:%S")] $message" >> "$LOG_FILE"
@@ -52,424 +62,646 @@ error_exit() {
     exit 1
 }
 
-# Function to retry commands
-retry_command() {
-    local cmd="$1"
-    local description="$2"
-    local max_attempts=${3:-$MAX_RETRIES}
+# Enhanced internet connectivity check
+check_internet_connectivity() {
+    print_status "Checking internet connectivity..." "INFO"
+    
+    local test_urls=("google.com" "cloudflare.com" "1.1.1.1" "packages.wazuh.com")
+    local success=false
+    
+    for url in "${test_urls[@]}"; do
+        if ping -c 1 "$url" &> /dev/null; then
+            success=true
+            break
+        fi
+    done
+    
+    if ! $success; then
+        print_status "No internet connectivity detected. Please check your connection and try again." "ERROR"
+        print_status "Troubleshooting steps:" "INFO"
+        print_status "1. Check your network cable or Wi-Fi connection" "INFO"
+        print_status "2. Verify DNS settings in /etc/resolv.conf" "INFO"
+        print_status "3. Try 'ping google.com' to test basic connectivity" "INFO"
+        print_status "4. Check if a proxy is required for your network" "INFO"
+        return 1
+    fi
+    
+    print_status "Internet connectivity confirmed." "SUCCESS"
+    return 0
+}
+
+# Enhanced APT handling
+handle_apt_issues() {
+    print_status "Checking APT system status..." "INFO"
+    
+    # Check for locked database
+    if fuser /var/lib/dpkg/lock &>/dev/null; then
+        print_status "APT database is locked. Attempting to resolve..." "WARNING"
+        sleep 10
+        if fuser /var/lib/dpkg/lock &>/dev/null; then
+            print_status "Could not acquire APT lock. Please ensure no other package managers are running." "ERROR"
+            return 1
+        fi
+    fi
+    
+    # Fix potentially corrupt lists
+    print_status "Cleaning package lists..." "INFO"
+    rm -rf /var/lib/apt/lists/*
+    mkdir -p /var/lib/apt/lists/partial
+    
+    # Update package lists with multiple retries
     local attempt=1
-    local timeout=$TIMEOUT_BETWEEN_RETRIES
+    local max_attempts=3
     
     while [ $attempt -le $max_attempts ]; do
-        print_status "Attempting $description (try $attempt/$max_attempts)..." "INFO"
-        if eval "$cmd"; then
-            print_status "$description succeeded on attempt $attempt." "SUCCESS"
+        print_status "Updating package lists (attempt $attempt/$max_attempts)..." "INFO"
+        if apt update 2>&1 | tee -a "$LOG_FILE"; then
+            print_status "Package lists updated successfully." "SUCCESS"
             return 0
         else
-            print_status "$description failed (attempt $attempt/$max_attempts)." "ERROR"
             if [ $attempt -lt $max_attempts ]; then
-                print_status "Waiting ${timeout} seconds before retrying..." "INFO"
-                sleep $timeout
-                timeout=$((timeout * 2))  # Exponential backoff
+                print_status "Update failed. Waiting before retry..." "WARNING"
+                sleep $((attempt * 5))
             fi
         fi
         ((attempt++))
     done
     
-    print_status "$description failed after $max_attempts attempts." "ERROR"
+    print_status "Failed to update package lists after $max_attempts attempts." "ERROR"
+    print_status "Troubleshooting steps:" "INFO"
+    print_status "1. Check /etc/apt/sources.list for invalid repositories" "INFO"
+    print_status "2. Verify network connectivity to package repositories" "INFO"
+    print_status "3. Try 'apt clean' and then retry the installation" "INFO"
     return 1
 }
 
-# Function to check and fix system state
-check_system_state() {
-    print_status "Performing system state check..." "INFO"
+# Function to validate domain
+validate_domain() {
+    local domain="$1"
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}$ ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# Function to check and install Docker
+setup_docker() {
+    print_status "Setting up Docker environment..." "INFO"
     
-    # Stop potentially conflicting services
-    local services=("elasticsearch" "kibana" "wazuh-manager" "filebeat" "zerotier-one")
-    for service in "${services[@]}"; do
-        if systemctl is-active --quiet "$service" 2>/dev/null; then
-            print_status "Stopping $service..." "INFO"
-            systemctl stop "$service" || true
+    # Check if Docker is already installed
+    if command -v docker &> /dev/null; then
+        print_status "Docker is already installed." "INFO"
+    else
+        print_status "Installing Docker..." "INFO"
+        
+        # Install dependencies
+        apt-get install -y \
+            apt-transport-https \
+            ca-certificates \
+            curl \
+            gnupg \
+            lsb-release
+        
+        # Add Docker's official GPG key
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        
+        # Set up the stable repository
+        echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+            $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+        
+        # Install Docker
+        apt-get update
+        apt-get install -y docker-ce docker-ce-cli containerd.io
+        
+        # Start and enable Docker service
+        systemctl start docker
+        systemctl enable docker
+    fi
+    
+    # Install Docker Compose if not present
+    if ! command -v docker-compose &> /dev/null; then
+        print_status "Installing Docker Compose..." "INFO"
+        curl -L "https://github.com/docker/compose/releases/download/v${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
+    fi
+    
+    # Verify installations
+    if docker --version && docker-compose --version; then
+        print_status "Docker environment setup completed successfully." "SUCCESS"
+        return 0
+    else
+        print_status "Docker environment setup failed." "ERROR"
+        return 1
+    fi
+}
+
+# Function to configure domain and DNS
+configure_domain() {
+    print_status "Beginning domain configuration..." "INFO"
+    
+    # Prompt for domain
+    while true; do
+        read -p "Enter your domain name (e.g., wazuh.yourdomain.com): " DOMAIN
+        if validate_domain "$DOMAIN"; then
+            break
+        else
+            print_status "Invalid domain format. Please enter a valid domain name." "ERROR"
         fi
     done
     
-    # Clean package manager state
-    print_status "Cleaning package manager state..." "INFO"
-    apt clean || true
-    apt autoremove -y || true
-    rm -rf /var/lib/apt/lists/*
-    mkdir -p /var/lib/apt/lists/partial
-    
-    # Fix broken packages
-    print_status "Checking for broken packages..." "INFO"
-    if ! retry_command "apt install -f -y" "Fixing broken packages"; then
-        print_status "Warning: Unable to fix broken packages. Continuing anyway..." "ERROR"
-    fi
-    
-    print_status "System state check completed." "SUCCESS"
-}
-
-# Function to validate versions
-validate_versions() {
-    local wazuh_version="$1"
-    local elastic_version="$2"
-    
-    if ! [[ $wazuh_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        print_status "Invalid Wazuh version format. Please use X.Y.Z format (e.g., 4.9.2)" "ERROR"
-        return 1
-    fi
-    
-    if ! [[ $elastic_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        print_status "Invalid Elasticsearch version format. Please use X.Y.Z format (e.g., 8.16.0)" "ERROR"
-        return 1
-    fi
-    
-    return 0
-}
-
-# Function to setup repositories
-setup_repositories() {
-    local wazuh_version="$1"
-    
-    print_status "Setting up repositories..." "INFO"
-    
-    # Remove existing Wazuh repository files
-    rm -f /etc/apt/sources.list.d/wazuh.list*
-    
-    # Add Wazuh repository with retry
-    if ! retry_command "curl -s https://packages.wazuh.com/key/GPG-KEY-WAZUH | apt-key add -" "Adding Wazuh GPG key"; then
-        return 1
-    fi
-    
-    echo "deb https://packages.wazuh.com/$wazuh_version/apt/ stable main" | tee /etc/apt/sources.list.d/wazuh.list
-    
-    # Update package lists with retry
-    if ! retry_command "apt update" "Updating package lists"; then
-        return 1
-    fi
-    
-    return 0
-}
-
-# Function to install ZeroTier
-install_zerotier() {
-    print_status "Installing ZeroTier..." "INFO"
-    
-    if ! retry_command "curl -s https://install.zerotier.com | bash" "Installing ZeroTier"; then
-        return 1
-    fi
-    
-    # Enable and start ZeroTier service
-    systemctl enable zerotier-one
-    systemctl start zerotier-one
-    
-    # Wait for service to be fully operational
-    print_status "Waiting for ZeroTier service to be ready..." "INFO"
-    sleep 10
-    
-    return 0
-}
-
-# Function to configure ZeroTier
-configure_zerotier() {
-    local network_id="$1"
-    local max_wait=60  # Maximum seconds to wait for IP assignment
-    
-    print_status "Joining ZeroTier network $network_id..." "INFO"
-    zerotier-cli join "$network_id"
-    
-    print_status "Waiting for IP assignment (timeout: ${max_wait}s)..." "INFO"
-    local wait_time=0
-    while [ $wait_time -lt $max_wait ]; do
-        local zt_ip=$(zerotier-cli listnetworks -j | jq -r ".[] | select(.nwid==\"$network_id\") | .assignedAddresses[0]" | cut -d'/' -f1)
-        if [ ! -z "$zt_ip" ]; then
-            print_status "ZeroTier IP assigned: $zt_ip" "SUCCESS"
-            echo "$zt_ip"
-            return 0
+    # Prompt for email (for SSL certificates)
+    while true; do
+        read -p "Enter your email address (for SSL certificates): " EMAIL
+        if [[ "$EMAIL" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; then
+            break
+        else
+            print_status "Invalid email format. Please enter a valid email address." "ERROR"
         fi
-        sleep 5
-        wait_time=$((wait_time + 5))
     done
     
-    print_status "Failed to get ZeroTier IP assignment within ${max_wait} seconds" "ERROR"
-    return 1
-}
-
-# Function to install Wazuh Manager
-install_wazuh_manager() {
-    local wazuh_version="$1"
+    # Display DNS configuration instructions
+    print_status "Domain Configuration Instructions:" "INFO"
+    echo ""
+    print_status "Please configure the following DNS records for your domain:" "INFO"
+    print_status "1. Create an A record for: $DOMAIN" "INFO"
+    print_status "2. Point it to your server's IP address" "INFO"
+    echo ""
+    print_status "If you're using Cloudflare, please ensure that:" "INFO"
+    print_status "- SSL/TLS encryption mode is set to 'Full'" "INFO"
+    print_status "- Always Use HTTPS is enabled" "INFO"
+    echo ""
     
-    print_status "Installing Wazuh Manager..." "INFO"
-    
-    if ! retry_command "apt install -y wazuh-manager" "Installing Wazuh Manager"; then
-        return 1
-    fi
-    
-    # Wait for initial installation to complete
-    sleep 10
-    
-    # Enable and start service
-    systemctl daemon-reload
-    systemctl enable wazuh-manager
-    systemctl start wazuh-manager
-    
-    # Wait for service to be fully operational
-    print_status "Waiting for Wazuh Manager to be ready..." "INFO"
-    sleep 30
-    
-    # Verify installation
-    if ! systemctl is-active --quiet wazuh-manager; then
-        print_status "Wazuh Manager service failed to start" "ERROR"
-        return 1
-    fi
-    
-    return 0
-}
-
-# Function to configure Wazuh API
-configure_wazuh_api() {
-    local password="$1"
-    
-    print_status "Configuring Wazuh API..." "INFO"
-    
-    # Wait for API to be ready
-    print_status "Waiting for Wazuh API to be ready..." "INFO"
-    sleep 10  # Give the service time to fully start
-    
-    # Check if the user management tool exists and determine version
-    if [ -f "/var/ossec/bin/wazuh-user" ]; then
-        # New version (4.x+)
-        print_status "Using Wazuh 4.x+ user management..." "INFO"
-        if ! retry_command "/var/ossec/bin/wazuh-user create wazuh-admin -p \"$password\" -a" "Creating Wazuh API user"; then
-            return 1
-        fi
-    elif [ -f "/var/ossec/bin/wazuh-users" ]; then
-        # Old version (3.x)
-        print_status "Using Wazuh 3.x user management..." "INFO"
-        if ! retry_command "/var/ossec/bin/wazuh-users add wazuh-admin -p \"$password\"" "Creating Wazuh API user"; then
-            return 1
+    # Verify DNS propagation
+    read -p "Have you configured the DNS records? (y/n): " dns_configured
+    if [[ $dns_configured =~ ^[Yy]$ ]]; then
+        print_status "Checking DNS propagation..." "INFO"
+        
+        local max_attempts=5
+        local attempt=1
+        local propagated=false
+        
+        while [ $attempt -le $max_attempts ]; do
+            if host "$DOMAIN" &>/dev/null; then
+                propagated=true
+                break
+            else
+                print_status "DNS not propagated yet. Attempt $attempt/$max_attempts" "WARNING"
+                sleep 30
+            fi
+            ((attempt++))
+        done
+        
+        if [ "$propagated" = true ]; then
+            print_status "DNS propagation confirmed." "SUCCESS"
+            USE_SSL=true
+        else
+            print_status "DNS propagation not detected. Continuing without SSL..." "WARNING"
+            print_status "You can configure SSL manually later." "INFO"
+            USE_SSL=false
         fi
     else
-        print_status "Wazuh user management tool not found. Please check your installation." "ERROR"
-        return 1
+        print_status "Continuing without DNS configuration. SSL will not be enabled." "WARNING"
+        USE_SSL=false
     fi
-    
-    # Restart Wazuh Manager to apply changes
-    print_status "Restarting Wazuh Manager..." "INFO"
-    systemctl restart wazuh-manager
-    
-    # Wait for the service to be fully up
-    sleep 15
-    
-    # Verify the service is running
-    if ! systemctl is-active --quiet wazuh-manager; then
-        print_status "Wazuh Manager failed to restart after API configuration" "ERROR"
-        return 1
-    fi
-    
-    print_status "Wazuh API configured successfully" "SUCCESS"
-    return 0
 }
 
-# Comprehensive uninstall function
-uninstall_wazuh() {
-    print_status "Beginning Wazuh uninstallation..." "INFO"
+# Function to generate Docker Compose configuration
+generate_docker_compose() {
+    local compose_file="docker-compose.yml"
+    print_status "Generating Docker Compose configuration..." "INFO"
     
-    # Stop services
-    local services=("wazuh-manager" "elasticsearch" "kibana" "filebeat" "zerotier-one")
+    cat > "$compose_file" << EOF
+version: '3.8'
+
+services:
+  wazuh.manager:
+    image: wazuh/wazuh-manager:latest
+    hostname: wazuh.manager
+    restart: always
+    ports:
+      - "1514:1514"
+      - "1515:1515"
+      - "514:514/udp"
+      - "55000:55000"
+    environment:
+      - ELASTICSEARCH_URL=https://elasticsearch:9200
+      - ELASTIC_USERNAME=elastic
+      - ELASTIC_PASSWORD=changeme
+    volumes:
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_agentless:/var/ossec/agentless
+      - wazuh_wodles:/var/ossec/wodles
+      - filebeat_etc:/etc/filebeat
+      - filebeat_var:/var/lib/filebeat
+    networks:
+      - wazuh-network
+
+  nginx:
+    image: nginx:latest
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs
+    depends_on:
+      - wazuh.manager
+    networks:
+      - wazuh-network
+
+networks:
+  wazuh-network:
+    driver: bridge
+
+volumes:
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_agentless:
+  wazuh_wodles:
+  filebeat_etc:
+  filebeat_var:
+EOF
+
+    print_status "Docker Compose configuration generated." "SUCCESS"
+}
+
+# Function to generate NGINX configuration
+generate_nginx_config() {
+    local domain="$1"
+    local use_ssl="$2"
+    local config_file="nginx.conf"
+    
+    print_status "Generating NGINX configuration..." "INFO"
+    
+    # Basic configuration
+    cat > "$config_file" << EOF
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+    
+    log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
+                    '\$status \$body_bytes_sent "\$http_referer" '
+                    '"\$http_user_agent" "\$http_x_forwarded_for"';
+    
+    access_log /var/log/nginx/access.log main;
+    
+    sendfile on;
+    keepalive_timeout 65;
+    server_tokens off;
+    
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN";
+    add_header X-XSS-Protection "1; mode=block";
+    add_header X-Content-Type-Options "nosniff";
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    
+    # Wazuh API reverse proxy
+    server {
+EOF
+    
+    # Add SSL configuration if enabled
+    if [ "$use_ssl" = true ]; then
+        cat >> "$config_file" << EOF
+        listen 443 ssl http2;
+        listen [::]:443 ssl http2;
+        server_name ${domain};
+        
+        ssl_certificate /etc/nginx/certs/fullchain.pem;
+        ssl_certificate_key /etc/nginx/certs/privkey.pem;
+        ssl_session_timeout 1d;
+        ssl_session_cache shared:SSL:50m;
+        ssl_session_tickets off;
+        
+        # Modern configuration
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
+        ssl_prefer_server_ciphers off;
+        
+        # OCSP Stapling
+        ssl_stapling on;
+        ssl_stapling_verify on;
+        resolver 1.1.1.1 1.0.0.1 valid=300s;
+        resolver_timeout 5s;
+EOF
+    else
+        cat >> "$config_file" << EOF
+        listen 80;
+        listen [::]:80;
+        server_name ${domain};
+EOF
+    fi
+    
+    # Common configuration
+    cat >> "$config_file" << EOF
+        
+        # Proxy settings
+        location / {
+            proxy_pass https://wazuh.manager:55000;
+            proxy_buffer_size 128k;
+            proxy_buffers 4 256k;
+            proxy_busy_buffers_size 256k;
+            proxy_ssl_verify off;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade \$http_upgrade;
+            proxy_set_header Connection 'upgrade';
+            proxy_set_header Host \$host;
+            proxy_cache_bypass \$http_upgrade;
+            proxy_set_header X-Real-IP \$remote_addr;
+            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto \$scheme;
+        }
+        
+        # Health check
+        location /health {
+            access_log off;
+            return 200 'healthy\n';
+        }
+    }
+EOF
+    
+    # HTTP redirect to HTTPS if SSL is enabled
+    if [ "$use_ssl" = true ]; then
+        cat >> "$config_file" << EOF
+    
+    # Redirect HTTP to HTTPS
+    server {
+        listen 80;
+        listen [::]:80;
+        server_name ${domain};
+        return 301 https://\$server_name\$request_uri;
+    }
+EOF
+    fi
+    
+    cat >> "$config_file" << EOF
+}
+EOF
+    
+    print_status "NGINX configuration generated successfully." "SUCCESS"
+}
+
+# Function to setup SSL with Let's Encrypt
+setup_ssl() {
+    local domain="$1"
+    local email="$2"
+    
+    print_status "Setting up SSL with Let's Encrypt..." "INFO"
+    
+    # Create directory for certificates
+    mkdir -p certs
+    
+    # Add Certbot container to docker-compose.yml
+    cat >> docker-compose.yml << EOF
+
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - ./certs:/etc/letsencrypt
+      - ./certbot/www:/var/www/certbot
+    command: certonly --webroot --webroot-path=/var/www/certbot --email ${email} --agree-tos --no-eff-email -d ${domain}
+EOF
+    
+    # Initial certificate request
+    print_status "Requesting SSL certificate..." "INFO"
+    if docker-compose run --rm certbot; then
+        print_status "SSL certificate obtained successfully." "SUCCESS"
+        
+        # Copy certificates to nginx certs directory
+        cp certs/live/$domain/fullchain.pem certs/
+        cp certs/live/$domain/privkey.pem certs/
+        
+        # Set proper permissions
+        chmod 644 certs/fullchain.pem
+        chmod 644 certs/privkey.pem
+        
+        # Setup auto-renewal
+        setup_ssl_renewal
+    else
+        print_status "Failed to obtain SSL certificate." "ERROR"
+        USE_SSL=false
+        return 1
+    fi
+}
+
+# Function to setup SSL auto-renewal
+setup_ssl_renewal() {
+    print_status "Setting up SSL auto-renewal..." "INFO"
+    
+    # Create renewal script
+    cat > ssl-renewal.sh << 'EOF'
+#!/bin/bash
+docker-compose run --rm certbot renew
+docker-compose exec nginx nginx -s reload
+EOF
+    
+    chmod +x ssl-renewal.sh
+    
+    # Add to crontab
+    (crontab -l 2>/dev/null; echo "0 12 * * * $(pwd)/ssl-renewal.sh") | crontab -
+    
+    print_status "SSL auto-renewal configured." "SUCCESS"
+}
+
+# Function to setup Docker-based Wazuh installation
+setup_docker_wazuh() {
+    print_status "Setting up Docker-based Wazuh installation..." "INFO"
+    
+    # Create project directory
+    local install_dir="/opt/wazuh-docker"
+    mkdir -p "$install_dir"
+    cd "$install_dir"
+    
+    # Generate Docker Compose configuration
+    generate_docker_compose
+    
+    # Generate NGINX configuration
+    generate_nginx_config "$DOMAIN" "$USE_SSL"
+    
+    # Setup SSL if enabled
+    if [ "$USE_SSL" = true ]; then
+        setup_ssl "$DOMAIN" "$EMAIL"
+    fi
+    
+    # Start the containers
+    print_status "Starting Wazuh containers..." "INFO"
+    if docker-compose up -d; then
+        print_status "Wazuh containers started successfully." "SUCCESS"
+    else
+        print_status "Failed to start Wazuh containers." "ERROR"
+        return 1
+    fi
+    
+    # Wait for services to be ready
+    print_status "Waiting for services to be ready..." "INFO"
+    sleep 30
+    
+    # Verify services
+    verify_docker_services
+}
+
+# Function to verify Docker services
+verify_docker_services() {
+    print_status "Verifying Docker services..." "INFO"
+    
+    local services=("wazuh.manager" "nginx")
+    local all_running=true
+    
     for service in "${services[@]}"; do
-        if systemctl is-active --quiet "$service" 2>/dev/null; then
-            print_status "Stopping $service..." "INFO"
-            systemctl stop "$service"
-            systemctl disable "$service"
+        if ! docker-compose ps "$service" | grep -q "Up"; then
+            print_status "Service $service is not running properly." "ERROR"
+            all_running=false
         fi
     done
     
-    # Remove packages
-    print_status "Removing Wazuh packages..." "INFO"
-    apt remove --purge -y wazuh-manager wazuh-api elasticsearch kibana filebeat
-    
-    # Clean up directories
-    print_status "Cleaning up Wazuh directories..." "INFO"
-    rm -rf /var/ossec/
-    rm -rf /etc/wazuh/
-    rm -rf /var/lib/wazuh/
-    
-    # Remove repository files
-    rm -f /etc/apt/sources.list.d/wazuh.list*
-    
-    # Clean up ZeroTier if requested
-    read -p "Do you want to remove ZeroTier as well? (y/n): " remove_zerotier
-    if [[ $remove_zerotier =~ ^[Yy]$ ]]; then
-        print_status "Removing ZeroTier..." "INFO"
-        zerotier-cli leave
-        apt remove --purge -y zerotier-one
-        rm -rf /var/lib/zerotier-one
+    if [ "$all_running" = true ]; then
+        print_status "All Docker services are running properly." "SUCCESS"
+        return 0
+    else
+        print_status "Some services failed to start. Check the logs with 'docker-compose logs'" "ERROR"
+        return 1
     fi
-    
-    # Final cleanup
-    apt autoremove -y
-    apt clean
-    
-    print_status "Wazuh uninstallation completed." "SUCCESS"
 }
 
-# Function to verify installation
-verify_installation() {
-    local zt_ip="$1"
+# Main execution flow
+main() {
+    # Clear screen and show welcome message
+    clear
+    print_status "Welcome to the Enhanced Wazuh Installation Wizard" "INFO"
+    print_status "Script started at: $START_TIME" "INFO"
+    echo ""
     
-    print_status "Verifying installation..." "INFO"
-    
-    # Check Wazuh Manager service
-    if ! systemctl is-active --quiet wazuh-manager; then
-        print_status "Wazuh Manager service is not running" "ERROR"
-        return 1
+    # Check if running as root
+    if [ "$EUID" -ne 0 ]; then
+        print_status "This script must be run as root. Please use sudo." "ERROR"
+        exit 1
     fi
     
-    # Check ZeroTier connection
-    if ! zerotier-cli info | grep -q "ONLINE"; then
-        print_status "ZeroTier is not online" "ERROR"
-        return 1
+    # Check internet connectivity
+    if ! check_internet_connectivity; then
+        exit 1
     fi
     
-    # Try to curl the API (allowing self-signed certificates)
-    if ! curl -k -s -o /dev/null "https://${zt_ip}:55000"; then
-        print_status "Unable to reach Wazuh API" "ERROR"
-        return 1
+    # Display installation options
+    print_status "Please select installation type:" "INFO"
+    echo "1. Docker-based installation (Recommended)"
+    echo "2. Traditional installation"
+    echo "3. Uninstall existing installation"
+    
+    read -p "Enter your choice (1-3): " install_choice
+    
+    case $install_choice in
+        1)
+            INSTALL_TYPE="docker"
+            ;;
+        2)
+            INSTALL_TYPE="traditional"
+            ;;
+        3)
+            INSTALL_TYPE="uninstall"
+            ;;
+        *)
+            print_status "Invalid choice. Exiting." "ERROR"
+            exit 1
+            ;;
+    esac
+    
+    # Handle domain configuration
+    if [ "$INSTALL_TYPE" != "uninstall" ]; then
+        configure_domain
     fi
     
-    print_status "Installation verification completed successfully" "SUCCESS"
-    return 0
+    # Proceed with selected installation type
+    case $INSTALL_TYPE in
+        "docker")
+            print_status "Proceeding with Docker-based installation..." "INFO"
+            
+            # Setup Docker environment
+            if ! setup_docker; then
+                print_status "Docker setup failed. Exiting." "ERROR"
+                exit 1
+            fi
+            
+            # Setup Wazuh with Docker
+            if ! setup_docker_wazuh; then
+                print_status "Wazuh Docker setup failed. Exiting." "ERROR"
+                exit 1
+            fi
+            ;;
+            
+        "traditional")
+            print_status "Traditional installation selected." "INFO"
+            print_status "This installation type is not recommended. Please consider using Docker-based installation." "WARNING"
+            read -p "Do you want to continue anyway? (y/n): " continue_traditional
+            if [[ $continue_traditional =~ ^[Yy]$ ]]; then
+                # Call traditional installation function (from previous script)
+                traditional_install
+            else
+                print_status "Installation cancelled." "INFO"
+                exit 0
+            fi
+            ;;
+            
+        "uninstall")
+            print_status "Proceeding with uninstallation..." "INFO"
+            if [ -f "docker-compose.yml" ]; then
+                print_status "Docker installation detected. Removing containers and volumes..." "INFO"
+                docker-compose down -v
+                rm -rf /opt/wazuh-docker
+            fi
+            uninstall_wazuh
+            ;;
+    esac
+    
+    # Display completion message and information
+    if [ "$INSTALL_TYPE" != "uninstall" ]; then
+        print_status "Installation completed successfully!" "SUCCESS"
+        echo ""
+        print_status "Access Information:" "INFO"
+        if [ "$USE_SSL" = true ]; then
+            print_status "Wazuh Dashboard: https://$DOMAIN" "INFO"
+        else
+            print_status "Wazuh Dashboard: http://$DOMAIN" "INFO"
+        fi
+        print_status "Default credentials: admin / admin" "INFO"
+        print_status "Please change the default password after first login." "WARNING"
+        echo ""
+        print_status "Installation directory: /opt/wazuh-docker" "INFO"
+        print_status "Configuration files:" "INFO"
+        print_status "- Docker Compose: docker-compose.yml" "INFO"
+        print_status "- NGINX: nginx.conf" "INFO"
+        if [ "$USE_SSL" = true ]; then
+            print_status "- SSL certificates: ./certs/" "INFO"
+        fi
+    else
+        print_status "Uninstallation completed successfully!" "SUCCESS"
+    fi
+    
+    print_status "Script completed at: $(date)" "INFO"
 }
 
 # Trap errors
 trap 'error_exit ${LINENO} "$BASH_COMMAND"' ERR
 
-# Redirect all output to the log file
-exec > >(tee -a "$LOG_FILE") 2>&1
-
-print_status "Script started at $START_TIME" "INFO"
-
-# Check if running as root
-if [ "$EUID" -ne 0 ]; then
-    print_status "This script must be run as root. Please run 'sudo bash $0'" "ERROR"
-    exit 1
-fi
-
-# Check for required commands
-for cmd in curl wget jq systemctl; do
-    if ! command -v "$cmd" &> /dev/null; then
-        print_status "Required command '$cmd' not found. Installing essential packages..." "INFO"
-        apt update && apt install -y curl wget jq systemd
-        break
-    fi
-done
-
-# Display welcome message
-display_header "Welcome to the Wazuh-Wizard"
-echo "This script will guide you through the installation or uninstallation of Wazuh with ZeroTier integration."
-echo "Please follow the prompts and instructions carefully."
-echo ""
-
-# Prompt user for action
-print_status "Please choose an option:" "INFO"
-echo "1. Install Wazuh"
-echo "2. Uninstall Wazuh"
-read -p "Enter your choice (1 or 2): " USER_CHOICE
-
-case "$USER_CHOICE" in
-    1)
-        ACTION="install"
-        ;;
-    2)
-        ACTION="uninstall"
-        ;;
-    *)
-        print_status "Invalid choice. Please run the script again and select 1 or 2." "ERROR"
-        exit 1
-        ;;
-esac
-
-if [ "$ACTION" == "install" ]; then
-    # Perform system checks and preparation
-    display_header "System Preparation"
-    check_system_state
-    
-    # Get and validate versions
-    display_header "Version Selection"
-    while true; do
-        read -p "Enter Wazuh version (e.g., 4.9.2): " WAZUH_VERSION
-        read -p "Enter Elasticsearch version (e.g., 8.16.0): " ELASTIC_VERSION
-        
-        if validate_versions "$WAZUH_VERSION" "$ELASTIC_VERSION"; then
-            break
-        fi
-        print_status "Please try again with valid version numbers." "INFO"
-    done
-    
-    # Setup repositories
-    display_header "Repository Setup"
-    if ! setup_repositories "$WAZUH_VERSION"; then
-        print_status "Failed to setup repositories. Exiting." "ERROR"
-        exit 1
-    fi
-    
-    # Install and configure ZeroTier
-    display_header "ZeroTier Installation"
-    if ! install_zerotier; then
-        print_status "Failed to install ZeroTier. Exiting." "ERROR"
-        exit 1
-    fi
-    
-    # Get ZeroTier network ID and configure
-    display_header "ZeroTier Configuration"
-    read -p "Enter your ZeroTier Network ID: " ZT_NETWORK_ID
-    ZT_IP=$(configure_zerotier "$ZT_NETWORK_ID")
-    if [ $? -ne 0 ]; then
-        print_status "Failed to configure ZeroTier. Exiting." "ERROR"
-        exit 1
-    fi
-    
-    # Install Wazuh Manager
-    display_header "Wazuh Manager Installation"
-    if ! install_wazuh_manager "$WAZUH_VERSION"; then
-        print_status "Failed to install Wazuh Manager. Exiting." "ERROR"
-        exit 1
-    fi
-    
-    # Configure Wazuh API
-    display_header "Wazuh API Configuration"
-    read -s -p "Enter a password for the Wazuh API user 'wazuh-admin': " WAZUH_PASSWORD
-    echo ""
-    if ! configure_wazuh_api "$WAZUH_PASSWORD"; then
-        print_status "Failed to configure Wazuh API. Exiting." "ERROR"
-        exit 1
-    fi
-    
-    # Verify installation
-    display_header "Installation Verification"
-    if ! verify_installation "$ZT_IP"; then
-        print_status "Installation verification failed. Please check the logs for details." "ERROR"
-        exit 1
-    fi
-    
-    # Installation complete
-    END_TIME=$(date)
-    display_header "Installation Complete"
-    print_status "Installation completed successfully at $END_TIME" "SUCCESS"
-    echo ""
-    print_status "Access Information:" "INFO"
-    print_status "Wazuh Manager API URL: https://$ZT_IP:55000" "INFO"
-    print_status "Username: wazuh-admin" "INFO"
-    print_status "ZeroTier Network ID: $ZT_NETWORK_ID" "INFO"
-    print_status "ZeroTier IP: $ZT_IP" "INFO"
-    print_status "Log file location: $LOG_FILE" "INFO"
-    
-elif [ "$ACTION" == "uninstall" ]; then
-    # Perform uninstallation
-    display_header "Uninstallation"
-    uninstall_wazuh
-fi
-
-print_status "Script completed successfully!" "SUCCESS"
-exit 0
+# Start script execution
+main
