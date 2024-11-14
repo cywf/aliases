@@ -9,15 +9,24 @@ set -e
 # Variables
 LOG_FILE="wazuh_setup.log"
 START_TIME=$(date)
-step_counter=1
-MAX_RETRIES=3
-TIMEOUT_BETWEEN_RETRIES=5
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Installation steps tracking
+declare -a STEPS=(
+    "Check Prerequisites"
+    "Configure Network"
+    "Setup Domain"
+    "Install Docker"
+    "Configure Services"
+    "Start Containers"
+    "Verify Installation"
+)
+TOTAL_STEPS=${#STEPS[@]}
+CURRENT_STEP=0
+
+# Configuration variables
 DOCKER_COMPOSE_VERSION="2.21.0"
-
-# Installation type (will be set by user choice)
 INSTALL_TYPE=""
-
-# Network-related variables
 DOMAIN=""
 EMAIL=""
 USE_SSL=false
@@ -32,6 +41,50 @@ COLOR_SUCCESS="\e[32m" # Green
 COLOR_ERROR="\e[31m"   # Red
 COLOR_WARNING="\e[33m" # Yellow
 COLOR_RESET="\e[0m"    # Reset
+
+# Function to show ASCII banner
+show_banner() {
+    clear
+    cat << "EOF"
+ __          __              _     
+ \ \        / /             | |    
+  \ \  /\  / /_ _ _____   _| |__  
+   \ \/  \/ / _` |_  / | | | '_ \ 
+    \  /\  / (_| |/ /| |_| | | | |
+     \/  \/ \__,_/___|\__,_|_| |_|
+                                  
+    Docker Installation Wizard
+    
+EOF
+    echo "Version: 1.0.0"
+    echo "Starting installation at: $START_TIME"
+    echo "----------------------------------------"
+    echo ""
+}
+
+# Function to show progress bar
+show_progress() {
+    local current=$1
+    local total=$2
+    local width=50
+    local percentage=$((current * 100 / total))
+    local completed=$((width * current / total))
+    local remaining=$((width - completed))
+    
+    printf "\rProgress: [%${completed}s%${remaining}s] %d%%" \
+           "$(printf '#%.0s' $(seq 1 $completed))" \
+           "$(printf ' %.0s' $(seq 1 $remaining))" \
+           "$percentage"
+}
+
+# Function to update progress
+update_progress() {
+    local step_name=$1
+    ((CURRENT_STEP++))
+    echo -e "\n\n${COLOR_INFO}Step $CURRENT_STEP/$TOTAL_STEPS: $step_name${COLOR_RESET}"
+    show_progress $CURRENT_STEP $TOTAL_STEPS
+    echo -e "\n"
+}
 
 # Function to print status messages with colors
 print_status() {
@@ -49,18 +102,213 @@ print_status() {
     echo "[$(date +"%Y-%m-%d %H:%M:%S")] $message" >> "$LOG_FILE"
 }
 
-# Function to display headers
-display_header() {
-    clear
-    echo "############################################################"
-    echo "# Step $step_counter: $1"
-    echo "############################################################"
-    echo ""
-    ((step_counter++))
+# Function to check internet connectivity
+check_internet_connectivity() {
+    print_status "Checking internet connectivity..." "INFO"
+    
+    local test_urls=(
+        "google.com"
+        "cloudflare.com"
+        "github.com"
+        "1.1.1.1"
+    )
+    
+    for url in "${test_urls[@]}"; do
+        if ping -c 1 -W 5 "$url" &>/dev/null; then
+            print_status "Internet connectivity confirmed via $url" "SUCCESS"
+            return 0
+        fi
+    done
+    
+    print_status "No internet connectivity detected. Please check your network connection." "ERROR"
+    return 1
 }
 
-# Function to detect and validate IP addresses
+# Function to cleanup on error
+cleanup() {
+    local exit_code=$?
+    local line_number=$1
+    
+    if [ $exit_code -ne 0 ]; then
+        print_status "Error occurred on line $line_number" "ERROR"
+        print_status "Cleaning up..." "INFO"
+        
+        # Stop any running containers
+        if [ -f "/opt/wazuh-docker/docker-compose.yml" ]; then
+            cd /opt/wazuh-docker
+            docker-compose down -v &>/dev/null || true
+        fi
+        
+        # Remove installation directory
+        rm -rf /opt/wazuh-docker &>/dev/null || true
+        
+        print_status "Cleanup completed. Check $LOG_FILE for details." "INFO"
+    fi
+    
+    exit $exit_code
+}
+
+# Function to validate prerequisites
+check_prerequisites() {
+    update_progress "${STEPS[0]}"
+    print_status "Checking prerequisites..." "INFO"
+    
+    # Check required commands
+    local required_commands=(
+        "curl"
+        "wget"
+        "dig"
+        "openssl"
+    )
+    
+    local missing_commands=()
+    
+    for cmd in "${required_commands[@]}"; do
+        if ! command -v "$cmd" &>/dev/null; then
+            missing_commands+=("$cmd")
+        fi
+    done
+    
+    if [ ${#missing_commands[@]} -ne 0 ]; then
+        print_status "Installing missing prerequisites: ${missing_commands[*]}" "INFO"
+        apt-get update
+        apt-get install -y "${missing_commands[@]}"
+    fi
+    
+    print_status "All prerequisites satisfied" "SUCCESS"
+    return 0
+}
+
+# Function to verify Docker services
+verify_docker_services() {
+    print_status "Verifying Docker services..." "INFO"
+    
+    local services=(
+        "wazuh.manager"
+        "nginx"
+        "zerotier"
+    )
+    
+    local failed_services=()
+    
+    for service in "${services[@]}"; do
+        if ! docker-compose ps "$service" | grep -q "Up"; then
+            failed_services+=("$service")
+        fi
+    done
+    
+    if [ ${#failed_services[@]} -eq 0 ]; then
+        print_status "All services are running properly" "SUCCESS"
+        return 0
+    else
+        print_status "The following services failed to start: ${failed_services[*]}" "ERROR"
+        print_status "Check logs with: docker-compose logs ${failed_services[*]}" "INFO"
+        return 1
+    fi
+}
+
+# Set up error handling
+trap 'cleanup ${LINENO}' ERR
+
+# Start logging
+exec 1> >(tee -a "$LOG_FILE") 2>&1
+
+# Main execution starts here
+show_banner
+check_prerequisites
+
+# Function to validate IP address
+validate_ip() {
+    local ip=$1
+    local ip_regex='^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+    
+    if [[ ! $ip =~ $ip_regex ]]; then
+        return 1
+    fi
+    
+    local IFS='.'
+    read -ra ip_parts <<< "$ip"
+    for part in "${ip_parts[@]}"; do
+        if [ "$part" -gt 255 ] || [ "$part" -lt 0 ]; then
+            return 1
+        fi
+    done
+    
+    return 0
+}
+
+# Function to validate ZeroTier network ID
+validate_zerotier_network_id() {
+    local network_id=$1
+    local network_id_regex='^[0-9a-fA-F]{16}$'
+    
+    if [[ ! $network_id =~ $network_id_regex ]]; then
+        return 1
+    fi
+    return 0
+}
+
+# Function to setup ZeroTier
+setup_zerotier() {
+    update_progress "Setting up ZeroTier"
+    print_status "Configuring ZeroTier network..." "INFO"
+    
+    # Install ZeroTier if not present
+    if ! command -v zerotier-cli &>/dev/null; then
+        print_status "Installing ZeroTier..." "INFO"
+        curl -s https://install.zerotier.com | bash || {
+            print_status "Failed to install ZeroTier" "ERROR"
+            return 1
+        }
+    fi
+    
+    # Get ZeroTier Network ID
+    while true; do
+        read -p "Enter your ZeroTier Network ID: " ZEROTIER_NETWORK_ID
+        if validate_zerotier_network_id "$ZEROTIER_NETWORK_ID"; then
+            break
+        else
+            print_status "Invalid ZeroTier Network ID. It should be 16 hexadecimal characters." "ERROR"
+        fi
+    done
+    
+    # Join network
+    print_status "Joining ZeroTier network..." "INFO"
+    zerotier-cli join "$ZEROTIER_NETWORK_ID"
+    
+    # Wait for network connection
+    print_status "Waiting for ZeroTier connection..." "INFO"
+    local max_attempts=30
+    local attempt=1
+    local connected=false
+    
+    while [ $attempt -le $max_attempts ]; do
+        show_progress $attempt $max_attempts
+        
+        if ZEROTIER_IP=$(zerotier-cli listnetworks | grep "$ZEROTIER_NETWORK_ID" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'); then
+            connected=true
+            break
+        fi
+        
+        sleep 2
+        ((attempt++))
+    done
+    echo ""  # New line after progress bar
+    
+    if [ "$connected" = true ]; then
+        print_status "Successfully connected to ZeroTier network" "SUCCESS"
+        print_status "ZeroTier IP: $ZEROTIER_IP" "INFO"
+        return 0
+    else
+        print_status "Failed to connect to ZeroTier network" "ERROR"
+        print_status "Please check your network ID and ensure the network allows this device" "INFO"
+        return 1
+    fi
+}
+
+# Enhanced function to detect and validate IP addresses
 detect_server_ips() {
+    update_progress "Detecting Network Configuration"
     print_status "Detecting server IP configurations..." "INFO"
     
     # Detect public IP using multiple services for reliability
@@ -71,9 +319,11 @@ detect_server_ips() {
         "api.ipify.org"
     )
     
+    print_status "Detecting public IP address..." "INFO"
     for service in "${public_ip_services[@]}"; do
         PUBLIC_IP=$(curl -s "$service" 2>/dev/null)
-        if [[ -n "$PUBLIC_IP" && "$PUBLIC_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        if validate_ip "$PUBLIC_IP"; then
+            print_status "Public IP detected: $PUBLIC_IP" "SUCCESS"
             break
         fi
     done
@@ -83,22 +333,9 @@ detect_server_ips() {
         return 1
     fi
     
-    print_status "Public IP detected: $PUBLIC_IP" "SUCCESS"
-    
-    # Check for ZeroTier installation and configuration
-    if command -v zerotier-cli >/dev/null 2>&1; then
-        if systemctl is-active --quiet zerotier-one; then
-            ZEROTIER_IP=$(zerotier-cli listnetworks | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+')
-            if [ -n "$ZEROTIER_IP" ]; then
-                print_status "ZeroTier IP detected: $ZEROTIER_IP" "SUCCESS"
-            else
-                print_status "ZeroTier is installed but no IP assigned yet." "WARNING"
-            fi
-        else
-            print_status "ZeroTier service is not running." "WARNING"
-        fi
-    else
-        print_status "ZeroTier is not installed yet." "INFO"
+    # Setup ZeroTier network
+    if ! setup_zerotier; then
+        print_status "ZeroTier setup failed. Proceeding with public IP only." "WARNING"
     fi
     
     # Display network configuration summary
@@ -114,104 +351,14 @@ detect_server_ips() {
     return 0
 }
 
-# Function to verify network connectivity
-verify_network_setup() {
-    print_status "Verifying network configuration..." "INFO"
-    
-    # Check public IP connectivity
-    if ! curl -s --connect-timeout 5 "http://$PUBLIC_IP" &>/dev/null; then
-        print_status "Warning: Public IP might not be accessible externally" "WARNING"
-        print_status "Please ensure your firewall allows incoming connections" "INFO"
-    fi
-    
-    # Check ZeroTier connectivity if configured
-    if [ -n "$ZEROTIER_IP" ]; then
-        if ! ping -c 1 -W 5 "$ZEROTIER_IP" &>/dev/null; then
-            print_status "Warning: ZeroTier network might not be properly configured" "WARNING"
-            
-            # Attempt to fix common ZeroTier issues
-            print_status "Attempting to fix ZeroTier configuration..." "INFO"
-            systemctl restart zerotier-one
-            sleep 5
-            
-            if [ -n "$ZEROTIER_NETWORK_ID" ]; then
-                zerotier-cli join "$ZEROTIER_NETWORK_ID"
-                sleep 5
-                
-                # Verify again after fix attempt
-                if ! ping -c 1 -W 5 "$ZEROTIER_IP" &>/dev/null; then
-                    print_status "ZeroTier network is still not responding properly" "ERROR"
-                    print_status "Please check your ZeroTier configuration manually" "INFO"
-                    return 1
-                fi
-            fi
-        fi
-    fi
-    
-    return 0
-}
-
-# Function to validate domain
-validate_domain() {
-    local domain="$1"
-    if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}$ ]]; then
-        return 1
-    fi
-    return 0
-}
-
-# Function to check DNS propagation
-check_dns_propagation() {
-    local domain="$1"
-    local expected_ip="$2"
-    local max_attempts=5
-    local attempt=1
-    
-    print_status "Checking DNS propagation for $domain..." "INFO"
-    
-    while [ $attempt -le $max_attempts ]; do
-        print_status "Attempt $attempt of $max_attempts..." "INFO"
-        
-        # Try multiple DNS resolvers
-        local resolvers=("1.1.1.1" "8.8.8.8" "9.9.9.9")
-        local resolved_ip=""
-        
-        for resolver in "${resolvers[@]}"; do
-            resolved_ip=$(dig +short "@$resolver" "$domain" A | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -n1)
-            if [ -n "$resolved_ip" ]; then
-                break
-            fi
-        done
-        
-        if [ -n "$resolved_ip" ]; then
-            if [ "$resolved_ip" = "$expected_ip" ]; then
-                print_status "DNS propagation confirmed! Domain resolves to correct IP." "SUCCESS"
-                return 0
-            else
-                print_status "Domain resolves to $resolved_ip (expected: $expected_ip)" "WARNING"
-            fi
-        else
-            print_status "Domain not resolving yet..." "WARNING"
-        fi
-        
-        if [ $attempt -lt $max_attempts ]; then
-            print_status "Waiting 30 seconds before next check..." "INFO"
-            sleep 30
-        fi
-        ((attempt++))
-    done
-    
-    print_status "DNS propagation check failed after $max_attempts attempts" "ERROR"
-    return 1
-}
-
-# Function to configure domain and DNS
+# Enhanced function to configure domain and DNS
 configure_domain() {
-    display_header "Domain and DNS Configuration"
+    update_progress "Configuring Domain"
+    print_status "Beginning domain configuration..." "INFO"
     
     # Detect and display IP information first
     if ! detect_server_ips; then
-        print_status "Failed to detect server IPs. Please check network configuration." "ERROR"
+        print_status "IP detection failed. Cannot proceed with domain configuration." "ERROR"
         return 1
     fi
     
@@ -235,96 +382,120 @@ configure_domain() {
         fi
     done
     
-    # Cloudflare check
+    # Cloudflare configuration
     read -p "Are you using Cloudflare? (y/n): " use_cloudflare
     if [[ $use_cloudflare =~ ^[Yy]$ ]]; then
         USE_CLOUDFLARE=true
-        print_status "Cloudflare Configuration Instructions:" "INFO"
-        echo ""
-        print_status "1. Login to your Cloudflare dashboard" "INFO"
-        print_status "2. Select your domain" "INFO"
-        print_status "3. Go to DNS settings" "INFO"
-        print_status "4. Add an A record:" "INFO"
-        echo "   - Name: ${DOMAIN%%.*} (subdomain part)"
-        echo "   - IPv4 address: $PUBLIC_IP"
-        echo "   - Proxy status: DNS only (grey cloud)"
-        echo ""
-        print_status "5. Go to SSL/TLS settings:" "INFO"
-        echo "   - Set encryption mode to 'Full'"
-        echo "   - Enable 'Always Use HTTPS'"
-        echo ""
-        print_status "6. Go to Network settings:" "INFO"
-        echo "   - Enable WebSockets if not already enabled"
-        echo ""
+        show_cloudflare_instructions
     else
         USE_CLOUDFLARE=false
-        print_status "Standard DNS Configuration Instructions:" "INFO"
-        echo ""
-        print_status "Add the following DNS record to your domain provider:" "INFO"
-        echo "Type: A"
-        echo "Name: ${DOMAIN%%.*} (subdomain part)"
-        echo "Value: $PUBLIC_IP"
-        echo "TTL: 300 (or lowest available)"
-        echo ""
+        show_standard_dns_instructions
     fi
     
-    # Wait for user to confirm DNS configuration
-    while true; do
-        read -p "Have you configured the DNS records as instructed? (y/n): " dns_configured
-        if [[ $dns_configured =~ ^[Yy]$ ]]; then
-            break
-        elif [[ $dns_configured =~ ^[Nn]$ ]]; then
-            print_status "Please configure DNS records before continuing." "WARNING"
-            read -p "Press Enter to view the instructions again, or type 'exit' to quit: " response
-            if [[ $response == "exit" ]]; then
-                return 1
-            fi
-            continue
-        fi
-    done
-    
-    # Check DNS propagation
-    print_status "Checking DNS configuration..." "INFO"
-    if ! check_dns_propagation "$DOMAIN" "$PUBLIC_IP"; then
-        print_status "DNS propagation not complete. You have two options:" "WARNING"
-        echo "1. Wait for DNS to propagate and run the script again"
-        echo "2. Continue anyway (not recommended)"
-        read -p "Do you want to continue anyway? (y/n): " continue_anyway
-        if [[ ! $continue_anyway =~ ^[Yy]$ ]]; then
-            return 1
-        fi
-    fi
-    
-    # Configure SSL
-    read -p "Would you like to enable SSL/TLS encryption? (y/n): " enable_ssl
-    if [[ $enable_ssl =~ ^[Yy]$ ]]; then
-        USE_SSL=true
-        print_status "SSL/TLS encryption will be enabled during installation." "SUCCESS"
-    else
-        USE_SSL=false
-        print_status "SSL/TLS encryption will not be enabled. You can enable it later manually." "WARNING"
-    fi
+    # Wait for DNS configuration
+    wait_for_dns_configuration
     
     return 0
 }
 
+# Function to show Cloudflare-specific instructions
+show_cloudflare_instructions() {
+    print_status "Cloudflare Configuration Instructions:" "INFO"
+    cat << EOF
+
+1. Login to your Cloudflare dashboard
+2. Select your domain
+3. Go to DNS settings
+4. Add an A record:
+   - Name: ${DOMAIN%%.*} (subdomain part)
+   - IPv4 address: $PUBLIC_IP
+   - Proxy status: DNS only (grey cloud)
+   
+5. SSL/TLS settings:
+   - Set encryption mode to 'Full'
+   - Enable 'Always Use HTTPS'
+   
+6. Network settings:
+   - Enable WebSockets
+
+EOF
+}
+
+# Function to show standard DNS instructions
+show_standard_dns_instructions() {
+    print_status "Standard DNS Configuration Instructions:" "INFO"
+    cat << EOF
+
+Add the following DNS record to your domain provider:
+- Type: A
+- Name: ${DOMAIN%%.*} (subdomain part)
+- Value: $PUBLIC_IP
+- TTL: 300 (or lowest available)
+
+EOF
+}
+
+# Function to wait for DNS configuration
+wait_for_dns_configuration() {
+    local configured=false
+    
+    while [ "$configured" = false ]; do
+        read -p "Have you configured the DNS records as instructed? (y/n): " dns_configured
+        if [[ $dns_configured =~ ^[Yy]$ ]]; then
+            print_status "Verifying DNS configuration..." "INFO"
+            if check_dns_propagation "$DOMAIN" "$PUBLIC_IP"; then
+                configured=true
+            else
+                print_status "DNS verification failed. Options:" "WARNING"
+                echo "1. Wait longer for DNS propagation"
+                echo "2. Verify your DNS settings"
+                echo "3. Continue anyway (not recommended)"
+                echo "4. Exit and start over"
+                read -p "Choose an option (1-4): " dns_option
+                case $dns_option in
+                    1) print_status "Waiting 60 seconds before next check..." "INFO"
+                       sleep 60
+                       ;;
+                    2) if [ "$USE_CLOUDFLARE" = true ]; then
+                           show_cloudflare_instructions
+                       else
+                           show_standard_dns_instructions
+                       fi
+                       ;;
+                    3) configured=true
+                       print_status "Proceeding without DNS verification..." "WARNING"
+                       ;;
+                    4) print_status "Installation cancelled." "INFO"
+                       exit 0
+                       ;;
+                    *) print_status "Invalid option. Please try again." "ERROR"
+                       ;;
+                esac
+            fi
+        elif [[ $dns_configured =~ ^[Nn]$ ]]; then
+            if [ "$USE_CLOUDFLARE" = true ]; then
+                show_cloudflare_instructions
+            else
+                show_standard_dns_instructions
+            fi
+        fi
+    done
+}
+
 # Function to setup Docker environment
 setup_docker() {
+    update_progress "Installing Docker"
     print_status "Setting up Docker environment..." "INFO"
     
     # Check if Docker is already installed
     if command -v docker &> /dev/null; then
-        print_status "Docker is already installed." "INFO"
-        # Verify Docker service is running
-        if ! systemctl is-active --quiet docker; then
-            print_status "Docker service is not running. Starting it..." "WARNING"
-            systemctl start docker
-            systemctl enable docker
-        fi
+        print_status "Docker is already installed. Checking version..." "INFO"
+        docker_version=$(docker --version | cut -d ' ' -f3 | tr -d ',')
+        print_status "Current Docker version: $docker_version" "INFO"
     else
         print_status "Installing Docker..." "INFO"
         
-        # Install dependencies
+        # Install prerequisites
         apt-get update
         apt-get install -y \
             apt-transport-https \
@@ -357,168 +528,44 @@ setup_docker() {
         chmod +x /usr/local/bin/docker-compose
     fi
     
-    # Verify installations
-    if docker --version && docker-compose --version; then
-        print_status "Docker environment setup completed successfully." "SUCCESS"
-        return 0
-    else
-        print_status "Docker environment setup failed." "ERROR"
+    # Verify Docker installation
+    if ! docker info &>/dev/null; then
+        print_status "Docker installation failed or daemon not running" "ERROR"
         return 1
     fi
-}
-
-# Function to generate enhanced NGINX configuration
-generate_nginx_config() {
-    local domain="$1"
-    local use_ssl="$2"
-    local config_file="nginx.conf"
     
-    print_status "Generating NGINX configuration..." "INFO"
-    
-    # Create basic configuration
-    cat > "$config_file" << EOF
-user nginx;
-worker_processes auto;
-error_log /var/log/nginx/error.log warn;
-pid /var/run/nginx.pid;
-
-events {
-    worker_connections 1024;
-}
-
-http {
-    include /etc/nginx/mime.types;
-    default_type application/octet-stream;
-    
-    log_format main '\$remote_addr - \$remote_user [\$time_local] "\$request" '
-                    '\$status \$body_bytes_sent "\$http_referer" '
-                    '"\$http_user_agent" "\$http_x_forwarded_for"';
-    
-    access_log /var/log/nginx/access.log main;
-    
-    sendfile on;
-    keepalive_timeout 65;
-    server_tokens off;
-    client_max_body_size 50M;
-    
-    # Security headers
-    add_header X-Frame-Options "SAMEORIGIN" always;
-    add_header X-XSS-Protection "1; mode=block" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "no-referrer-when-downgrade" always;
-    add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
-    
-    # Optimize SSL
-    ssl_session_timeout 1d;
-    ssl_session_cache shared:SSL:50m;
-    ssl_session_tickets off;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
-    ssl_prefer_server_ciphers off;
-    
-    # ZeroTier network configuration
-    server {
-EOF
-    
-    # Add SSL configuration if enabled
-    if [ "$use_ssl" = true ]; then
-        cat >> "$config_file" << EOF
-        listen 443 ssl http2;
-        listen [::]:443 ssl http2;
-        server_name ${domain};
-        
-        ssl_certificate /etc/nginx/certs/fullchain.pem;
-        ssl_certificate_key /etc/nginx/certs/privkey.pem;
-        
-        # OCSP Stapling
-        ssl_stapling on;
-        ssl_stapling_verify on;
-        resolver 1.1.1.1 1.0.0.1 valid=300s;
-        resolver_timeout 5s;
-EOF
-    else
-        cat >> "$config_file" << EOF
-        listen 80;
-        listen [::]:80;
-        server_name ${domain};
-EOF
+    # Create Docker network for Wazuh
+    if ! docker network inspect wazuh-network &>/dev/null; then
+        docker network create wazuh-network
     fi
     
-    # Add reverse proxy configuration with ZeroTier access control
-    cat >> "$config_file" << EOF
-        
-        # Wazuh API reverse proxy
-        location / {
-            # Allow ZeroTier network ranges
-            allow 10.0.0.0/8;      # ZeroTier managed routes
-            allow 172.16.0.0/12;   # ZeroTier managed routes
-            allow 192.168.0.0/16;  # ZeroTier managed routes
-            deny all;              # Deny all other traffic
-            
-            proxy_pass https://wazuh.manager:55000;
-            proxy_buffer_size 128k;
-            proxy_buffers 4 256k;
-            proxy_busy_buffers_size 256k;
-            proxy_ssl_verify off;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection 'upgrade';
-            proxy_set_header Host \$host;
-            proxy_cache_bypass \$http_upgrade;
-            proxy_set_header X-Real-IP \$remote_addr;
-            proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto \$scheme;
-            
-            # WebSocket support
-            proxy_read_timeout 90s;
-            proxy_set_header Upgrade \$http_upgrade;
-            proxy_set_header Connection "upgrade";
-        }
-        
-        # Health check endpoint
-        location /health {
-            access_log off;
-            return 200 'healthy\n';
-        }
-    }
-EOF
-    
-    # Add HTTP to HTTPS redirect if SSL is enabled
-    if [ "$use_ssl" = true ]; then
-        cat >> "$config_file" << EOF
-    
-    # Redirect HTTP to HTTPS
-    server {
-        listen 80;
-        listen [::]:80;
-        server_name ${domain};
-        return 301 https://\$server_name\$request_uri;
-    }
-EOF
-    fi
-    
-    cat >> "$config_file" << EOF
-}
-EOF
-    
-    print_status "NGINX configuration generated successfully." "SUCCESS"
+    print_status "Docker environment setup completed successfully" "SUCCESS"
     return 0
 }
 
-# Function to generate Docker Compose configuration
+# Function to generate enhanced Docker Compose configuration
 generate_docker_compose() {
-    local compose_file="docker-compose.yml"
+    update_progress "Generating Docker Configuration"
     print_status "Generating Docker Compose configuration..." "INFO"
+    
+    local compose_file="docker-compose.yml"
     
     cat > "$compose_file" << EOF
 version: '3.8'
 
+x-logging: &logging
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "50m"
+      max-file: "5"
+
 services:
   wazuh.manager:
+    <<: *logging
     image: wazuh/wazuh-manager:latest
     hostname: wazuh.manager
-    restart: always
+    restart: unless-stopped
     ports:
       - "1514:1514"
       - "1515:1515"
@@ -548,11 +595,17 @@ services:
       - filebeat_var:/var/lib/filebeat
     networks:
       - wazuh-network
+    healthcheck:
+      test: ["CMD", "/var/ossec/bin/wazuh-control", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   nginx:
+    <<: *logging
     image: nginx:latest
     hostname: nginx
-    restart: always
+    restart: unless-stopped
     ports:
       - "80:80"
       - "443:443"
@@ -563,11 +616,17 @@ services:
       - wazuh.manager
     networks:
       - wazuh-network
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   zerotier:
+    <<: *logging
     image: zerotier/zerotier
     hostname: zerotier
-    restart: always
+    restart: unless-stopped
     devices:
       - /dev/net/tun:/dev/net/tun
     cap_add:
@@ -579,9 +638,15 @@ services:
       - ZEROTIER_NETWORK_ID=\${ZEROTIER_NETWORK_ID}
     networks:
       - wazuh-network
+    healthcheck:
+      test: ["CMD", "zerotier-cli", "listnetworks"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
 networks:
   wazuh-network:
+    name: wazuh-network
     driver: bridge
 
 volumes:
@@ -599,11 +664,46 @@ volumes:
   zerotier_data:
 EOF
     
-    print_status "Docker Compose configuration generated successfully." "SUCCESS"
+    print_status "Docker Compose configuration generated successfully" "SUCCESS"
+    
+    # Verify the configuration
+    if ! docker-compose config -q; then
+        print_status "Docker Compose configuration validation failed" "ERROR"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Function to monitor service startup
+monitor_service_startup() {
+    local service=$1
+    local max_attempts=30
+    local attempt=1
+    
+    print_status "Waiting for $service to be ready..." "INFO"
+    
+    while [ $attempt -le $max_attempts ]; do
+        show_progress $attempt $max_attempts
+        
+        if docker-compose ps "$service" | grep -q "Up (healthy)"; then
+            echo ""  # New line after progress bar
+            print_status "$service is ready" "SUCCESS"
+            return 0
+        fi
+        
+        sleep 2
+        ((attempt++))
+    done
+    
+    echo ""  # New line after progress bar
+    print_status "$service failed to start properly" "ERROR"
+    return 1
 }
 
 # Function to setup Docker-based Wazuh installation
 setup_docker_wazuh() {
+    update_progress "Setting up Wazuh"
     print_status "Setting up Docker-based Wazuh installation..." "INFO"
     
     # Create project directory
@@ -611,142 +711,275 @@ setup_docker_wazuh() {
     mkdir -p "$install_dir"
     cd "$install_dir"
     
-    # Generate Docker Compose configuration
-    generate_docker_compose
-    
-    # Generate NGINX configuration
-    generate_nginx_config "$DOMAIN" "$USE_SSL"
-    
-    # Setup SSL if enabled
-    if [ "$USE_SSL" = true ]; then
-        setup_ssl "$DOMAIN" "$EMAIL"
-    fi
-    
-    # Generate .env file with secure passwords
-    generate_env_file
-    
-    # Start the containers
-    print_status "Starting Wazuh containers..." "INFO"
-    if docker-compose up -d; then
-        print_status "Wazuh containers started successfully." "SUCCESS"
-    else
-        print_status "Failed to start Wazuh containers." "ERROR"
+    # Generate configurations
+    if ! generate_docker_compose; then
         return 1
     fi
     
-    # Wait for services to be ready
-    print_status "Waiting for services to be ready..." "INFO"
-    sleep 30
+    if ! generate_nginx_config "$DOMAIN" "$USE_SSL"; then
+        return 1
+    fi
     
-    # Verify services
-    verify_docker_services
+    # Setup SSL if enabled
+    if [ "$USE_SSL" = true ]; then
+        if ! setup_ssl "$DOMAIN" "$EMAIL"; then
+            return 1
+        fi
+    fi
+    
+    # Generate secure environment file
+    if ! generate_env_file; then
+        return 1
+    fi
+    
+    # Start the containers
+    print_status "Starting Wazuh containers..." "INFO"
+    if ! docker-compose up -d; then
+        print_status "Failed to start Wazuh containers" "ERROR"
+        return 1
+    fi
+    
+    # Monitor service startup
+    local services=("wazuh.manager" "nginx" "zerotier")
+    for service in "${services[@]}"; do
+        if ! monitor_service_startup "$service"; then
+            print_status "Service startup monitoring failed" "ERROR"
+            return 1
+        fi
+    done
+    
+    print_status "Wazuh installation completed successfully" "SUCCESS"
+    return 0
 }
 
-# Function to generate secure environment file
-generate_env_file() {
-    print_status "Generating secure environment configuration..." "INFO"
+# Function to setup SSL certificates
+setup_ssl() {
+    local domain="$1"
+    local email="$2"
     
-    # Generate random passwords
-    local elastic_pass=$(openssl rand -base64 32)
-    local indexer_pass=$(openssl rand -base64 32)
-    local wazuh_api_pass=$(openssl rand -base64 32)
+    update_progress "Setting up SSL"
+    print_status "Setting up SSL certificates..." "INFO"
     
-    # Create .env file
-    cat > .env << EOF
-ELASTIC_PASSWORD=${elastic_pass}
-INDEXER_PASSWORD=${indexer_pass}
-WAZUH_API_PASSWORD=${wazuh_api_pass}
-ZEROTIER_NETWORK_ID=${ZEROTIER_NETWORK_ID}
+    # Create certificates directory
+    mkdir -p certs
+    
+    if [ "$USE_CLOUDFLARE" = true ]; then
+        setup_ssl_cloudflare "$domain"
+    else
+        setup_ssl_letsencrypt "$domain" "$email"
+    fi
+}
+
+# Function to setup SSL with Cloudflare
+setup_ssl_cloudflare() {
+    local domain="$1"
+    print_status "Generating self-signed certificate for Cloudflare..." "INFO"
+    
+    # Generate private key
+    openssl genrsa -out certs/privkey.pem 2048
+    
+    # Generate CSR
+    openssl req -new -key certs/privkey.pem -out certs/csr.pem -subj "/CN=${domain}"
+    
+    # Generate certificate
+    openssl x509 -req -days 365 -in certs/csr.pem -signkey certs/privkey.pem -out certs/fullchain.pem
+    
+    if [ -f certs/fullchain.pem ] && [ -f certs/privkey.pem ]; then
+        print_status "SSL certificates generated successfully" "SUCCESS"
+        chmod 644 certs/fullchain.pem
+        chmod 600 certs/privkey.pem
+        return 0
+    else
+        print_status "Failed to generate SSL certificates" "ERROR"
+        return 1
+    fi
+}
+
+# Function to setup SSL with Let's Encrypt
+setup_ssl_letsencrypt() {
+    local domain="$1"
+    local email="$2"
+    
+    print_status "Setting up Let's Encrypt certificates..." "INFO"
+    
+    # Install certbot if not present
+    if ! command -v certbot &>/dev/null; then
+        print_status "Installing certbot..." "INFO"
+        apt-get update
+        apt-get install -y certbot
+    fi
+    
+    # Stop nginx if running
+    docker-compose stop nginx 2>/dev/null || true
+    
+    # Get certificate
+    if certbot certonly --standalone --preferred-challenges http \
+        -d "$domain" --email "$email" --agree-tos --non-interactive; then
+        
+        # Copy certificates to nginx certs directory
+        cp /etc/letsencrypt/live/$domain/fullchain.pem certs/
+        cp /etc/letsencrypt/live/$domain/privkey.pem certs/
+        
+        chmod 644 certs/fullchain.pem
+        chmod 600 certs/privkey.pem
+        
+        # Setup auto-renewal
+        setup_ssl_renewal
+        
+        print_status "SSL certificates obtained successfully" "SUCCESS"
+        return 0
+    else
+        print_status "Failed to obtain SSL certificates" "ERROR"
+        return 1
+    fi
+}
+
+# Function to setup SSL auto-renewal
+setup_ssl_renewal() {
+    print_status "Setting up SSL auto-renewal..." "INFO"
+    
+    # Create renewal script
+    cat > ssl-renewal.sh << 'EOF'
+#!/bin/bash
+certbot renew --quiet
+docker-compose restart nginx
 EOF
     
-    chmod 600 .env
-    print_status "Secure environment configuration generated." "SUCCESS"
+    chmod +x ssl-renewal.sh
+    
+    # Add to crontab
+    (crontab -l 2>/dev/null | grep -v "ssl-renewal.sh"; echo "0 12 * * * $(pwd)/ssl-renewal.sh") | crontab -
+    
+    print_status "SSL auto-renewal configured" "SUCCESS"
 }
 
-# Main execution flow
-main() {
-    # Clear screen and show welcome message
+# Function to display installation summary
+display_installation_summary() {
+    local install_dir="$1"
+    
     clear
-    print_status "Welcome to the Enhanced Wazuh Installation Wizard" "INFO"
-    print_status "Script started at: $START_TIME" "INFO"
-    echo ""
+    cat << "EOF"
+ _____ _           _ _   
+|_   _| |         | | |  
+  | | | |__   __ _| | |_ 
+  | | | '_ \ / _` | | __|
+  | | | | | | (_| | | |_ 
+  \_/ |_| |_|\__,_|_|\__|
+EOF
     
-    # Check if running as root
-    if [ "$EUID" -ne 0 ]; then
-        print_status "This script must be run as root. Please use sudo." "ERROR"
-        exit 1
-    fi
+    echo -e "\nInstallation completed successfully!\n"
     
-    # Check internet connectivity
-    if ! check_internet_connectivity; then
-        exit 1
-    fi
-    
-    # Display installation options
-    print_status "Please select installation type:" "INFO"
-    echo "1. Docker-based installation (Recommended)"
-    echo "2. Traditional installation"
-    echo "3. Uninstall existing installation"
-    
-    read -p "Enter your choice (1-3): " install_choice
-    
-    case $install_choice in
-        1)
-            INSTALL_TYPE="docker"
-            ;;
-        2)
-            INSTALL_TYPE="traditional"
-            print_status "Traditional installation is deprecated. Please consider using Docker-based installation." "WARNING"
-            read -p "Do you want to continue with traditional installation? (y/n): " continue_traditional
-            if [[ ! $continue_traditional =~ ^[Yy]$ ]]; then
-                exit 0
-            fi
-            ;;
-        3)
-            INSTALL_TYPE="uninstall"
-            ;;
-        *)
-            print_status "Invalid choice. Exiting." "ERROR"
-            exit 1
-            ;;
-    esac
-    
-    # Configure domain and network
-    if [ "$INSTALL_TYPE" != "uninstall" ]; then
-        if ! configure_domain; then
-            print_status "Domain configuration failed. Exiting." "ERROR"
-            exit 1
+    print_status "Installation Summary:" "INFO"
+    echo "----------------------------------------"
+    echo "Installation Directory: $install_dir"
+    echo "Domain: $DOMAIN"
+    if [ "$USE_SSL" = true ]; then
+        echo "SSL: Enabled"
+        if [ "$USE_CLOUDFLARE" = true ]; then
+            echo "SSL Provider: Cloudflare"
+        else
+            echo "SSL Provider: Let's Encrypt"
         fi
-        
-        if ! verify_network_setup; then
-            print_status "Network verification failed. Exiting." "ERROR"
-            exit 1
-        fi
+    else
+        echo "SSL: Disabled"
     fi
+    echo "ZeroTier Network ID: $ZEROTIER_NETWORK_ID"
+    echo "----------------------------------------"
     
-    # Proceed with selected installation type
-    case $INSTALL_TYPE in
-        "docker")
-            if ! setup_docker; then
-                print_status "Docker setup failed. Exiting." "ERROR"
-                exit 1
-            fi
-            if ! setup_docker_wazuh; then
-                print_status "Wazuh Docker setup failed. Exiting." "ERROR"
-                exit 1
-            fi
-            ;;
-        "traditional")
-            traditional_install
-            ;;
-        "uninstall")
-            uninstall_wazuh
-            ;;
-    esac
+    print_status "Access Information:" "INFO"
+    if [ "$USE_SSL" = true ]; then
+        echo "Wazuh Dashboard: https://$DOMAIN"
+    else
+        echo "Wazuh Dashboard: http://$DOMAIN"
+    fi
+    echo "Default credentials: admin / admin"
+    echo "----------------------------------------"
     
-    print_status "Script completed successfully!" "SUCCESS"
-    exit 0
+    print_status "Important Notes:" "WARNING"
+    echo "1. Change the default password after first login"
+    echo "2. Configure your firewall to allow required ports"
+    echo "3. Backup the installation directory regularly"
+    echo "----------------------------------------"
+    
+    print_status "Useful Commands:" "INFO"
+    echo "- View logs: docker-compose logs -f"
+    echo "- Restart services: docker-compose restart"
+    echo "- Stop services: docker-compose down"
+    echo "- Start services: docker-compose up -d"
+    echo "----------------------------------------"
 }
 
-# Start script execution
-main
+# Function to verify installation
+verify_installation() {
+    update_progress "Verifying Installation"
+    print_status "Performing final verification..." "INFO"
+    
+    local checks=(
+        "Docker daemon is running"
+        "All containers are healthy"
+        "NGINX is configured properly"
+        "SSL certificates are valid"
+        "ZeroTier connection is active"
+    )
+    
+    local failed_checks=()
+    
+    # Check Docker daemon
+    if ! docker info &>/dev/null; then
+        failed_checks+=("Docker daemon is not running")
+    fi
+    
+    # Check container health
+    if ! docker-compose ps | grep -q "Up (healthy)"; then
+        failed_checks+=("Some containers are not healthy")
+    fi
+    
+    # Check NGINX configuration
+    if ! docker-compose exec nginx nginx -t &>/dev/null; then
+        failed_checks+=("NGINX configuration is invalid")
+    fi
+    
+    # Check SSL certificates if enabled
+    if [ "$USE_SSL" = true ]; then
+        if [ ! -f "certs/fullchain.pem" ] || [ ! -f "certs/privkey.pem" ]; then
+            failed_checks+=("SSL certificates are missing")
+        fi
+    fi
+    
+    # Check ZeroTier connection
+    if ! zerotier-cli listnetworks | grep -q "$ZEROTIER_NETWORK_ID"; then
+        failed_checks+=("ZeroTier connection is not active")
+    fi
+    
+    if [ ${#failed_checks[@]} -eq 0 ]; then
+        print_status "All checks passed successfully" "SUCCESS"
+        return 0
+    else
+        print_status "The following checks failed:" "ERROR"
+        for check in "${failed_checks[@]}"; do
+            echo "- $check"
+        done
+        return 1
+    fi
+}
+
+# Function to save installation config
+save_installation_config() {
+    local config_file="$1/installation_config.json"
+    
+    cat > "$config_file" << EOF
+{
+    "installation_date": "$(date)",
+    "domain": "$DOMAIN",
+    "use_ssl": $USE_SSL,
+    "use_cloudflare": $USE_CLOUDFLARE,
+    "zerotier_network_id": "$ZEROTIER_NETWORK_ID",
+    "public_ip": "$PUBLIC_IP",
+    "zerotier_ip": "$ZEROTIER_IP",
+    "docker_compose_version": "$DOCKER_COMPOSE_VERSION"
+}
+EOF
+    
+    chmod 600 "$config_file"
+    print_status "Installation configuration saved" "SUCCESS"
+}
