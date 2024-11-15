@@ -198,6 +198,12 @@ check_prerequisites() {
         return 1
     fi
     
+    # Check for curl
+    if ! command -v curl &> /dev/null; then
+        print_status "curl is not installed. Please install curl first." "ERROR"
+        return 1
+    fi
+    
     # Check for Docker
     if ! command -v docker &> /dev/null; then
         print_status "Docker is not installed. Please install Docker first." "ERROR"
@@ -235,7 +241,7 @@ configure_network() {
     fi
     
     if [ -z "$PUBLIC_IP" ]; then
-        retry_command PUBLIC_IP=$(curl -s ifconfig.me)
+        retry_command PUBLIC_IP=$(dig +short myip.opendns.com @resolver1.opendns.com)
         if [ $? -ne 0 ]; then
             print_status "Failed to detect public IP after multiple attempts." "ERROR"
             return 1
@@ -292,6 +298,12 @@ install_docker_compose() {
     fi
     
     chmod +x /usr/local/bin/docker-compose
+    
+    # Verify Docker Compose installation
+    if ! command -v docker-compose &> /dev/null; then
+        print_status "Docker Compose installation failed. Please check the installation path." "ERROR"
+        return 1
+    fi
     
     print_status "Docker Compose installed successfully." "SUCCESS"
     return 0
@@ -441,36 +453,31 @@ save_installation_details() {
     local details_file="${SCRIPT_DIR}/installation_details.txt"
     cat > "$details_file" << EOF
 Wazuh Installation Details
-==========================
-Domain: $DOMAIN
+===========================
+Installation Date: $(date)
 Public IP: $PUBLIC_IP
+Domain: $DOMAIN
 SSL Enabled: $USE_SSL
-Installation Directory: /opt/wazuh-docker
 Docker Compose Version: $DOCKER_COMPOSE_VERSION
-
-Services:
-- Wazuh: http://$PUBLIC_IP:55000
-- Elasticsearch: http://$PUBLIC_IP:9200
-- Kibana: http://$PUBLIC_IP:5601
-
 EOF
 
     print_status "Installation details saved to $details_file" "SUCCESS"
+    return 0
 }
 
-# Function to clean up on error
+# Function to handle cleanup on error
 cleanup_on_error() {
-    local error_code=${1:-1}  # Default to 1 if not provided
-    local error_line=${2:-"unknown"}  # Default to "unknown" if not provided
+    local error_code="$1"
+    local line_number="$2"
     
-    show_banner "error"
-    print_status "Installation failed on line $error_line" "ERROR"
-    print_status "Performing cleanup..." "INFO"
+    print_status "An error occurred. Cleaning up..." "ERROR"
+    print_status "Error occurred on line $line_number." "ERROR"
     
-    # Stop and remove containers
-    if [ -f "/opt/wazuh-docker/docker-compose.yml" ]; then
-        cd /opt/wazuh-docker
-        docker-compose down -v
+    # Stop Docker containers
+    local install_dir="/opt/wazuh-docker"
+    if [ -f "$install_dir/docker-compose.yml" ]; then
+        cd "$install_dir"
+        docker-compose down
     fi
     
     # Remove installation directory
