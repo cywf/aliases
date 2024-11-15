@@ -147,6 +147,47 @@ update_progress() {
     show_progress "$CURRENT_STEP" "$TOTAL_STEPS"
 }
 
+# Function to retry a command
+retry_command() {
+    local retries=3
+    local count=0
+    local delay=5
+    local command="$@"
+    
+    until [ $count -ge $retries ]; do
+        $command && break
+        count=$((count + 1))
+        print_status "Command failed. Attempt $count/$retries. Retrying in $delay seconds..." "WARNING"
+        sleep $delay
+    done
+    
+    if [ $count -ge $retries ]; then
+        print_status "Command failed after $retries attempts." "ERROR"
+        return 1
+    fi
+    return 0
+}
+
+# Interactive error handling
+handle_error() {
+    local error_message="$1"
+    local line_number="$2"
+    
+    print_status "$error_message" "ERROR"
+    print_status "Error occurred on line $line_number." "ERROR"
+    
+    while true; do
+        echo -e "${COLORS[WARNING]}Would you like to (r)etry, (s)kip, or (e)xit?${COLORS[RESET]}"
+        read -p "Enter your choice: " choice
+        case $choice in
+            [Rr]* ) return 1;;  # Retry the step
+            [Ss]* ) return 0;;  # Skip the step
+            [Ee]* ) cleanup_on_error 1 $line_number;;  # Exit the script
+            * ) echo "Please answer r, s, or e.";;
+        esac
+    done
+}
+
 # Function to check prerequisites
 check_prerequisites() {
     print_status "Checking prerequisites..." "INFO"
@@ -177,21 +218,28 @@ check_prerequisites() {
 configure_network() {
     print_status "Configuring network..." "INFO"
     
-    # Example: Check and configure ZeroTier network
     if [ -n "$ZEROTIER_NETWORK_ID" ]; then
         if ! command -v zerotier-cli &> /dev/null; then
             print_status "ZeroTier CLI is not installed. Please install it first." "ERROR"
             return 1
         fi
         
-        zerotier-cli join "$ZEROTIER_NETWORK_ID"
+        retry_command zerotier-cli join "$ZEROTIER_NETWORK_ID"
+        if [ $? -ne 0 ]; then
+            print_status "Failed to join ZeroTier network after multiple attempts." "ERROR"
+            return 1
+        fi
+        
         ZEROTIER_IP=$(zerotier-cli listnetworks | grep "$ZEROTIER_NETWORK_ID" | awk '{print $NF}')
         print_status "Joined ZeroTier network with IP: $ZEROTIER_IP" "SUCCESS"
     fi
     
-    # Example: Configure public IP
     if [ -z "$PUBLIC_IP" ]; then
-        PUBLIC_IP=$(curl -s ifconfig.me)
+        retry_command PUBLIC_IP=$(curl -s ifconfig.me)
+        if [ $? -ne 0 ]; then
+            print_status "Failed to detect public IP after multiple attempts." "ERROR"
+            return 1
+        fi
         print_status "Detected public IP: $PUBLIC_IP" "INFO"
     fi
     
@@ -209,7 +257,12 @@ install_docker() {
     fi
     
     # Install Docker
-    curl -fsSL https://get.docker.com -o get-docker.sh
+    retry_command curl -fsSL https://get.docker.com -o get-docker.sh
+    if [ $? -ne 0 ]; then
+        print_status "Failed to download Docker installation script." "ERROR"
+        return 1
+    fi
+    
     sh get-docker.sh
     rm get-docker.sh
     
@@ -232,7 +285,12 @@ install_docker_compose() {
     fi
     
     # Install Docker Compose
-    curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    retry_command curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    if [ $? -ne 0 ]; then
+        print_status "Failed to download Docker Compose." "ERROR"
+        return 1
+    fi
+    
     chmod +x /usr/local/bin/docker-compose
     
     print_status "Docker Compose installed successfully." "SUCCESS"
@@ -314,9 +372,14 @@ setup_ssl() {
         return 1
     fi
     
-    certbot certonly --standalone -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive
+    retry_command certbot certonly --standalone -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive
+    if [ $? -ne 0 ]; then
+        print_status "Failed to obtain SSL certificate for $DOMAIN after multiple attempts." "ERROR"
+        return 1
+    fi
+    
     if [ ! -d "/etc/letsencrypt/live/$DOMAIN" ]; then
-        print_status "Failed to obtain SSL certificate for $DOMAIN" "ERROR"
+        print_status "SSL certificate directory not found for $DOMAIN" "ERROR"
         return 1
     fi
     
@@ -335,7 +398,11 @@ start_wazuh_services() {
     fi
     
     cd "$install_dir"
-    docker-compose up -d
+    retry_command docker-compose up -d
+    if [ $? -ne 0 ]; then
+        print_status "Failed to start Docker containers after multiple attempts." "ERROR"
+        return 1
+    fi
     
     print_status "Wazuh services started successfully." "SUCCESS"
     return 0
@@ -424,72 +491,54 @@ main() {
     init_logging
     
     # Set up error handling
-    trap 'cleanup_on_error $? $LINENO' ERR
+    trap 'handle_error "An unexpected error occurred." $LINENO' ERR
     
     # Show main banner
     show_banner "main"
     
     # Check prerequisites
     if ! check_prerequisites; then
-        show_banner "error"
-        print_status "Prerequisites check failed" "ERROR"
-        cleanup_on_error 1 $LINENO
+        handle_error "Prerequisites check failed" $LINENO
     fi
     
     # Configure network
     if ! configure_network; then
-        show_banner "error"
-        print_status "Network configuration failed" "ERROR"
-        cleanup_on_error 1 $LINENO
+        handle_error "Network configuration failed" $LINENO
     fi
     
     # Set up domain
     if ! setup_domain; then
-        show_banner "error"
-        print_status "Domain setup failed" "ERROR"
-        cleanup_on_error 1 $LINENO
+        handle_error "Domain setup failed" $LINENO
     fi
     
     # Install Docker
     if ! install_docker; then
-        show_banner "error"
-        print_status "Docker installation failed" "ERROR"
-        cleanup_on_error 1 $LINENO
+        handle_error "Docker installation failed" $LINENO
     fi
     
     # Install Docker Compose
     if ! install_docker_compose; then
-        show_banner "error"
-        print_status "Docker Compose installation failed" "ERROR"
-        cleanup_on_error 1 $LINENO
+        handle_error "Docker Compose installation failed" $LINENO
     fi
     
     # Generate Docker Compose configuration
     if ! generate_docker_compose; then
-        show_banner "error"
-        print_status "Failed to generate Docker Compose configuration" "ERROR"
-        cleanup_on_error 1 $LINENO
+        handle_error "Failed to generate Docker Compose configuration" $LINENO
     fi
     
     # Setup SSL if enabled
     if ! setup_ssl; then
-        show_banner "error"
-        print_status "SSL setup failed" "ERROR"
-        cleanup_on_error 1 $LINENO
+        handle_error "SSL setup failed" $LINENO
     fi
     
     # Start Wazuh services
     if ! start_wazuh_services; then
-        show_banner "error"
-        print_status "Failed to start Wazuh services" "ERROR"
-        cleanup_on_error 1 $LINENO
+        handle_error "Failed to start Wazuh services" $LINENO
     fi
     
     # Verify installation
     if ! verify_complete_installation; then
-        show_banner "error"
-        print_status "Installation verification failed" "ERROR"
-        cleanup_on_error 1 $LINENO
+        handle_error "Installation verification failed" $LINENO
     fi
     
     # Save installation details
