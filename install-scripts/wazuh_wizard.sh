@@ -188,6 +188,50 @@ handle_error() {
     done
 }
 
+# Function to configure network
+configure_network() {
+    print_status "Configuring network..." "INFO"
+    
+    if [ -n "$ZEROTIER_NETWORK_ID" ]; then
+        if ! command -v zerotier-cli &> /dev/null; then
+            print_status "ZeroTier CLI is not installed. Please install it first." "ERROR"
+            return 1
+        fi
+        
+        retry_command zerotier-cli join "$ZEROTIER_NETWORK_ID"
+        if [ $? -ne 0 ]; then
+            print_status "Failed to join ZeroTier network after multiple attempts." "ERROR"
+            return 1
+        fi
+        
+        ZEROTIER_IP=$(zerotier-cli listnetworks | grep "$ZEROTIER_NETWORK_ID" | awk '{print $NF}')
+        print_status "Joined ZeroTier network with IP: $ZEROTIER_IP" "SUCCESS"
+    fi
+    
+    # Attempt to detect public IP using multiple methods
+    local methods=("dig +short myip.opendns.com @resolver1.opendns.com" \
+                   "curl -s ifconfig.me" \
+                   "curl -s ipinfo.io/ip" \
+                   "curl -s icanhazip.com")
+    
+    for method in "${methods[@]}"; do
+        PUBLIC_IP=$(eval $method)
+        if [[ -n "$PUBLIC_IP" ]]; then
+            print_status "Detected public IP: $PUBLIC_IP using method: $method" "INFO"
+            break
+        else
+            print_status "Failed to detect public IP using method: $method" "WARNING"
+        fi
+    done
+    
+    if [[ -z "$PUBLIC_IP" ]]; then
+        print_status "Failed to detect public IP after multiple attempts." "ERROR"
+        return 1
+    fi
+    
+    return 0
+}
+
 # Function to check prerequisites
 check_prerequisites() {
     print_status "Checking prerequisites..." "INFO"
@@ -217,38 +261,6 @@ check_prerequisites() {
     fi
     
     print_status "All prerequisites are met." "SUCCESS"
-    return 0
-}
-
-# Function to configure network
-configure_network() {
-    print_status "Configuring network..." "INFO"
-    
-    if [ -n "$ZEROTIER_NETWORK_ID" ]; then
-        if ! command -v zerotier-cli &> /dev/null; then
-            print_status "ZeroTier CLI is not installed. Please install it first." "ERROR"
-            return 1
-        fi
-        
-        retry_command zerotier-cli join "$ZEROTIER_NETWORK_ID"
-        if [ $? -ne 0 ]; then
-            print_status "Failed to join ZeroTier network after multiple attempts." "ERROR"
-            return 1
-        fi
-        
-        ZEROTIER_IP=$(zerotier-cli listnetworks | grep "$ZEROTIER_NETWORK_ID" | awk '{print $NF}')
-        print_status "Joined ZeroTier network with IP: $ZEROTIER_IP" "SUCCESS"
-    fi
-    
-    if [ -z "$PUBLIC_IP" ]; then
-        retry_command PUBLIC_IP=$(dig +short myip.opendns.com @resolver1.opendns.com)
-        if [ $? -ne 0 ]; then
-            print_status "Failed to detect public IP after multiple attempts." "ERROR"
-            return 1
-        fi
-        print_status "Detected public IP: $PUBLIC_IP" "INFO"
-    fi
-    
     return 0
 }
 
@@ -452,26 +464,33 @@ save_installation_details() {
     
     local details_file="${SCRIPT_DIR}/installation_details.txt"
     cat > "$details_file" << EOF
+==============================================
 Wazuh Installation Details
-===========================
-Installation Date: $(date)
+Completed at: $(date)
+Script Version: $SCRIPT_VERSION
+==============================================
+
 Public IP: $PUBLIC_IP
 Domain: $DOMAIN
 SSL Enabled: $USE_SSL
 Docker Compose Version: $DOCKER_COMPOSE_VERSION
+
+Services:
+- Wazuh
+- Elasticsearch
+- Kibana
+
 EOF
 
     print_status "Installation details saved to $details_file" "SUCCESS"
-    return 0
 }
 
 # Function to handle cleanup on error
 cleanup_on_error() {
-    local error_code="$1"
+    local exit_code="$1"
     local line_number="$2"
     
-    print_status "An error occurred. Cleaning up..." "ERROR"
-    print_status "Error occurred on line $line_number." "ERROR"
+    print_status "Cleaning up after error..." "INFO"
     
     # Stop Docker containers
     local install_dir="/opt/wazuh-docker"
@@ -481,31 +500,20 @@ cleanup_on_error() {
     fi
     
     # Remove installation directory
-    rm -rf /opt/wazuh-docker
+    rm -rf "$install_dir"
     
-    # Leave ZeroTier network
-    if [ -n "$ZEROTIER_NETWORK_ID" ]; then
-        zerotier-cli leave "$ZEROTIER_NETWORK_ID"
-    fi
-    
-    print_status "Cleanup completed. Check $LOG_FILE for details." "INFO"
-    exit $error_code
+    print_status "Cleanup completed. Exiting with code $exit_code." "ERROR"
+    exit "$exit_code"
 }
 
-# Main function
+# Main function to orchestrate the setup
 main() {
-    # Initialize logging
-    init_logging
-    
-    # Set up error handling
-    trap 'handle_error "An unexpected error occurred." $LINENO' ERR
-    
-    # Show main banner
     show_banner "main"
+    init_logging
     
     # Check prerequisites
     if ! check_prerequisites; then
-        handle_error "Prerequisites check failed" $LINENO
+        handle_error "Prerequisite check failed" $LINENO
     fi
     
     # Configure network
