@@ -215,7 +215,9 @@ configure_network() {
                    "curl -s icanhazip.com")
     
     for method in "${methods[@]}"; do
+        print_status "Attempting to detect public IP using method: $method" "INFO"
         PUBLIC_IP=$(eval $method)
+        print_status "Output from method: $method -> $PUBLIC_IP" "INFO"
         if [[ -n "$PUBLIC_IP" ]]; then
             print_status "Detected public IP: $PUBLIC_IP using method: $method" "INFO"
             break
@@ -225,8 +227,15 @@ configure_network() {
     done
     
     if [[ -z "$PUBLIC_IP" ]]; then
-        print_status "Failed to detect public IP after multiple attempts." "ERROR"
-        return 1
+        # Fallback to local IP address
+        print_status "Failed to detect public IP. Falling back to local IP address." "WARNING"
+        PUBLIC_IP=$(hostname -I | awk '{print $1}')
+        if [[ -n "$PUBLIC_IP" ]]; then
+            print_status "Detected local IP: $PUBLIC_IP" "INFO"
+        else
+            print_status "Failed to detect any IP address." "ERROR"
+            return 1
+        fi
     fi
     
     return 0
@@ -490,7 +499,7 @@ cleanup_on_error() {
     local exit_code="$1"
     local line_number="$2"
     
-    print_status "Cleaning up after error..." "INFO"
+    print_status "Cleaning up after error..." "ERROR"
     
     # Stop Docker containers
     local install_dir="/opt/wazuh-docker"
@@ -499,8 +508,8 @@ cleanup_on_error() {
         docker-compose down
     fi
     
-    # Remove installation directory
-    rm -rf "$install_dir"
+    # Remove temporary files or directories if needed
+    # Example: rm -rf /path/to/temp/dir
     
     print_status "Cleanup completed. Exiting with code $exit_code." "ERROR"
     exit "$exit_code"
