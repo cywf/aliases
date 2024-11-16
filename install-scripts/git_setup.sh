@@ -34,7 +34,22 @@ ssh-add ~/.ssh/id_rsa
 # Print SSH public key and instructions
 echo "Copy the following SSH key to your GitHub account:"
 cat ~/.ssh/id_rsa.pub
-echo "Visit https://github.com/settings/keys to add the SSH key."
+echo ""
+echo "Instructions to add SSH key to GitHub:"
+echo "1. Log in to your GitHub account."
+echo "2. Go to 'Settings' by clicking on your profile picture in the top right corner."
+echo "3. In the left sidebar, click on 'SSH and GPG keys'."
+echo "4. Click on the 'New SSH key' button."
+echo "5. In the 'Title' field, add a descriptive label for the new key (e.g., 'My Server Key')."
+echo "6. Paste the copied SSH key into the 'Key' field."
+echo "7. Click 'Add SSH key' to save."
+echo ""
+echo "Additional instructions for server administrators:"
+echo "1. Ensure that the server has outbound internet access to connect to GitHub."
+echo "2. If the server is behind a firewall, ensure that SSH traffic is allowed."
+echo "3. Consider setting up a secure method to transfer the SSH public key from the server to your local machine if needed."
+echo "4. Verify that the server's time is synchronized, as time discrepancies can cause SSH issues."
+echo "5. Regularly update the server's packages and security patches to maintain security."
 
 # Conduct SSH test
 echo "Testing SSH connection to GitHub..."
