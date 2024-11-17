@@ -271,27 +271,15 @@ configure_network() {
         print_status "Joined ZeroTier network with IP: $ZEROTIER_IP" "SUCCESS"
     fi
 
-    # Attempt to detect public IP using multiple methods
-    local methods=("dig +short myip.opendns.com @resolver1.opendns.com" \
-                   "curl -s ifconfig.me" \
-                   "curl -s ipinfo.io/ip" \
-                   "curl -s icanhazip.com")
+    # Attempt to detect Docker network IP
+    DOCKER_NETWORK_INTERFACE="docker0"
+    DOCKER_IP=$(ip addr show "$DOCKER_NETWORK_INTERFACE" | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
 
-    for method in "${methods[@]}"; do
-        print_status "Attempting to detect public IP using method: $method" "INFO"
-        PUBLIC_IP=$(eval $method)
-        print_status "Output from method: $method -> $PUBLIC_IP" "INFO"
-        if [[ -n "$PUBLIC_IP" ]]; then
-            print_status "Detected public IP: $PUBLIC_IP using method: $method" "INFO"
-            break
-        else
-            print_status "Failed to detect public IP using method: $method" "WARNING"
-        fi
-    done
-
-    # Fallback to local IP address if public IP detection fails
-    if [[ -z "$PUBLIC_IP" ]]; then
-        print_status "Failed to detect public IP. Falling back to local IP address." "WARNING"
+    if [[ -n "$DOCKER_IP" ]]; then
+        PUBLIC_IP="$DOCKER_IP"
+        print_status "Detected Docker network IP: $PUBLIC_IP" "INFO"
+    else
+        print_status "Failed to detect Docker network IP. Falling back to local IP address." "WARNING"
         PUBLIC_IP=$(hostname -I | awk '{print $1}')
         if [[ -n "$PUBLIC_IP" ]]; then
             print_status "Detected local IP: $PUBLIC_IP" "INFO"
