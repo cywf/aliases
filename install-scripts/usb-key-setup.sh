@@ -275,7 +275,6 @@ setup_usb_for_user_accounts() {
     echo "Configuration complete. You should now be able to use your USB key for authentication."
 }
 
-# Function to setup USB for SSH with FIDO2-compatible devices
 setup_fido2_ssh() {
     echo "Setting up USB for SSH with FIDO2-compatible devices..."
 
@@ -321,16 +320,26 @@ setup_fido2_ssh() {
     echo "Please press your Yubikey button when prompted."
 
     # Step 5: Copy SSH Pub key to destination
-    read -p "Enter the destination IP address or hostname: " destination
-    ssh-copy-id -i ~/.ssh/id_ed25519_sk.pub "$destination"
-    if [ $? -ne 0 ]; then
-        echo "Error: Failed to copy SSH public key to destination."
-        exit 1
+    read -p "Enter the destination IP address or hostname (default: github.com): " destination
+    destination=${destination:-github.com}
+
+    if [ "$destination" = "github.com" ]; then
+        echo "Setting up SSH key for GitHub..."
+        echo "Please log in to your GitHub account and add the following SSH key:"
+        cat ~/.ssh/id_ed25519_sk.pub
+        echo "Visit https://github.com/settings/keys to add your SSH key."
+        read -p "Press Enter after adding the SSH key to GitHub..."
+    else
+        ssh-copy-id -i ~/.ssh/id_ed25519_sk.pub "$destination"
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to copy SSH public key to destination."
+            exit 1
+        fi
     fi
 
     # Step 6: Conduct test
     echo "Conducting SSH test..."
-    ssh "$destination" "echo 'SSH connection successful!'"
+    ssh -T git@github.com
     if [ $? -ne 0 ]; then
         echo "Error: SSH test failed."
         exit 1
@@ -346,7 +355,7 @@ setup_fido2_ssh() {
 
     # Step 9: Conduct final SSH test
     echo "Conducting final SSH test..."
-    ssh "$destination" "echo 'Final SSH connection successful!'"
+    ssh -T git@github.com
     if [ $? -ne 0 ]; then
         echo "Error: Final SSH test failed."
         exit 1
