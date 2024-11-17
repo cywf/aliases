@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# ------------------------------ # 
+# Key Objectives for this Script #
+# 
+# 1. Update system
+# 2. Install Teleport
+# 
+
 # Install Teleport
 
 sudo curl https://apt.releases.teleport.dev/gpg \
