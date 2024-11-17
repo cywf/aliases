@@ -1,7 +1,8 @@
 #!/bin/bash
 
-# Enhanced Wazuh setup script with Docker support, improved network handling,
-# and comprehensive domain/DNS management
+# ------------------ #
+# Wazuh Setup Script #
+# ------------------ #
 
 # Enable strict error handling
 set -euo pipefail
@@ -27,15 +28,31 @@ declare -a STEPS=(
 TOTAL_STEPS=${#STEPS[@]}
 CURRENT_STEP=0
 
-# Configuration variables (will be set through user input)
-DOCKER_COMPOSE_VERSION="2.21.0"
-DOMAIN=""
-EMAIL=""
+# Configuration variables
+read -p "Enter Docker Compose version (default: 2.21.0): " DOCKER_COMPOSE_VERSION
+DOCKER_COMPOSE_VERSION=${DOCKER_COMPOSE_VERSION:-2.21.0}
+
+read -p "Enter your domain: " DOMAIN
+
+read -p "Enter your email: " EMAIL
+
+read -p "Do you want to use SSL? (y/n, default: n): " USE_SSL_INPUT
 USE_SSL=false
-PUBLIC_IP=""
-ZEROTIER_IP=""
-ZEROTIER_NETWORK_ID=""
+if [[ "$USE_SSL_INPUT" =~ ^[Yy]$ ]]; then
+    USE_SSL=true
+fi
+
+read -p "Enter your public IP (leave blank to auto-detect): " PUBLIC_IP
+
+read -p "Enter your ZeroTier IP (if applicable): " ZEROTIER_IP
+
+read -p "Enter your ZeroTier Network ID (if applicable): " ZEROTIER_NETWORK_ID
+
+read -p "Do you want to use Cloudflare? (y/n, default: n): " USE_CLOUDFLARE_INPUT
 USE_CLOUDFLARE=false
+if [[ "$USE_CLOUDFLARE_INPUT" =~ ^[Yy]$ ]]; then
+    USE_CLOUDFLARE=true
+fi
 
 # Colors for output
 declare -A COLORS=(
@@ -50,7 +67,10 @@ declare -A COLORS=(
 
 # Function to initialize logging
 init_logging() {
+    # Create the directory for the log file if it doesn't exist
     mkdir -p "$(dirname "$LOG_FILE")"
+    
+    # Initialize the log file with a header
     cat > "$LOG_FILE" << EOF
 ==============================================
 Wazuh Installation Log
@@ -59,31 +79,49 @@ Script Version: $SCRIPT_VERSION
 ==============================================
 
 EOF
+
+    # Set permissions to ensure the log file is secure
     chmod 600 "$LOG_FILE"
+    
+    # Print a message indicating that logging has been initialized
+    echo "Logging initialized. Log file: $LOG_FILE"
 }
 
 # Function to log messages
 log_message() {
-    local level="$1"
-    local message="$2"
+    local level="$1"    # Log level (e.g., INFO, ERROR, WARNING)
+    local message="$2"  # Message to log
+
+    # Get the current timestamp
     local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+
+    # Format and append the log message to the log file
     echo "[${timestamp}] [${level}] ${message}" >> "$LOG_FILE"
 }
 
 # Function to print status messages
 print_status() {
-    local message="$1"
-    local level="${2:-INFO}"
+    local message="$1"  # Message to print
+    local level="${2:-INFO}"  # Log level, default to INFO if not provided
+
+    # Determine the color based on the log level
     local color="${COLORS[$level]:-${COLORS[INFO]}}"
+
+    # Print the message to the console with color
     echo -e "${color}[$(date +"%Y-%m-%d %H:%M:%S")] $message${COLORS[RESET]}"
+
+    # Log the message to the log file
     log_message "$level" "$message"
 }
 
 # Function to show ASCII banners
 show_banner() {
-    local banner_type="$1"
+    local banner_type="$1"  # Type of banner to display
+
+    # Clear the console for a clean display
     clear
-    
+
+    # Display the appropriate banner based on the type
     case "$banner_type" in
         "main")
             cat << "EOF"
@@ -117,8 +155,12 @@ EOF
                                           
 EOF
             ;;
+        *)
+            echo "Unknown banner type: $banner_type"
+            ;;
     esac
-    
+
+    # Print additional information
     echo -e "\n${COLORS[CYAN]}Version: $SCRIPT_VERSION${COLORS[RESET]}"
     echo -e "${COLORS[CYAN]}Started at: $(date)${COLORS[RESET]}"
     echo -e "${COLORS[CYAN]}----------------------------------------${COLORS[RESET]}\n"
@@ -126,15 +168,22 @@ EOF
 
 # Function to show progress
 show_progress() {
-    local current=$1
-    local total=$2
-    local width=50
+    local current=$1  # Current step number
+    local total=$2    # Total number of steps
+    local width=50    # Width of the progress bar
+
+    # Calculate the percentage of completion
     local percentage=$((current * 100 / total))
+    # Calculate the number of completed segments in the progress bar
     local completed=$((width * current / total))
+    # Calculate the number of remaining segments in the progress bar
     local remaining=$((width - completed))
+
+    # Create a spinner for visual effect
     local spinner=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
     local spin_idx=$((current % ${#spinner[@]}))
-    
+
+    # Print the progress bar with the spinner
     printf "\r${COLORS[CYAN]}[${spinner[$spin_idx]}] Progress: [%${completed}s%${remaining}s] %d%%${COLORS[RESET]}" \
            "$(printf '#%.0s' $(seq 1 $completed))" \
            "$(printf ' %.0s' $(seq 1 $remaining))" \
@@ -143,39 +192,52 @@ show_progress() {
 
 # Function to update progress
 update_progress() {
+    # Increment the current step
     ((CURRENT_STEP++))
+
+    # Call the show_progress function to update the display
     show_progress "$CURRENT_STEP" "$TOTAL_STEPS"
 }
 
 # Function to retry a command
 retry_command() {
-    local retries=3
-    local count=0
-    local delay=5
-    local command="$@"
-    
+    local retries=3      # Number of retry attempts
+    local count=0        # Current attempt count
+    local delay=5        # Delay between attempts in seconds
+    local command="$@"   # Command to execute
+
+    # Attempt to execute the command up to the specified number of retries
     until [ $count -ge $retries ]; do
+        # Execute the command
         $command && break
+
+        # Increment the attempt count
         count=$((count + 1))
+
+        # Print a warning message and wait before retrying
         print_status "Command failed. Attempt $count/$retries. Retrying in $delay seconds..." "WARNING"
         sleep $delay
     done
-    
+
+    # Check if the command failed after all attempts
     if [ $count -ge $retries ]; then
         print_status "Command failed after $retries attempts." "ERROR"
         return 1
     fi
+
     return 0
 }
 
 # Interactive error handling
 handle_error() {
-    local error_message="$1"
-    local line_number="$2"
-    
+    local error_message="$1"  # Error message to display
+    local line_number="$2"    # Line number where the error occurred
+
+    # Print the error message and line number
     print_status "$error_message" "ERROR"
     print_status "Error occurred on line $line_number." "ERROR"
-    
+
+    # Interactive loop to handle the error
     while true; do
         echo -e "${COLORS[WARNING]}Would you like to (r)etry, (s)kip, or (e)xit?${COLORS[RESET]}"
         read -p "Enter your choice: " choice
@@ -183,7 +245,7 @@ handle_error() {
             [Rr]* ) return 1;;  # Retry the step
             [Ss]* ) return 0;;  # Skip the step
             [Ee]* ) cleanup_on_error 1 $line_number;;  # Exit the script
-            * ) echo "Please answer r, s, or e.";;
+            * ) echo "Please answer r, s, or e.";;  # Prompt for valid input
         esac
     done
 }
@@ -191,29 +253,30 @@ handle_error() {
 # Function to configure network
 configure_network() {
     print_status "Configuring network..." "INFO"
-    
+
+    # Join ZeroTier network if a network ID is provided
     if [ -n "$ZEROTIER_NETWORK_ID" ]; then
         if ! command -v zerotier-cli &> /dev/null; then
             print_status "ZeroTier CLI is not installed. Please install it first." "ERROR"
             return 1
         fi
-        
+
         retry_command zerotier-cli join "$ZEROTIER_NETWORK_ID"
         if [ $? -ne 0 ]; then
             print_status "Failed to join ZeroTier network after multiple attempts." "ERROR"
             return 1
         fi
-        
+
         ZEROTIER_IP=$(zerotier-cli listnetworks | grep "$ZEROTIER_NETWORK_ID" | awk '{print $NF}')
         print_status "Joined ZeroTier network with IP: $ZEROTIER_IP" "SUCCESS"
     fi
-    
+
     # Attempt to detect public IP using multiple methods
     local methods=("dig +short myip.opendns.com @resolver1.opendns.com" \
                    "curl -s ifconfig.me" \
                    "curl -s ipinfo.io/ip" \
                    "curl -s icanhazip.com")
-    
+
     for method in "${methods[@]}"; do
         print_status "Attempting to detect public IP using method: $method" "INFO"
         PUBLIC_IP=$(eval $method)
@@ -225,9 +288,9 @@ configure_network() {
             print_status "Failed to detect public IP using method: $method" "WARNING"
         fi
     done
-    
+
+    # Fallback to local IP address if public IP detection fails
     if [[ -z "$PUBLIC_IP" ]]; then
-        # Fallback to local IP address
         print_status "Failed to detect public IP. Falling back to local IP address." "WARNING"
         PUBLIC_IP=$(hostname -I | awk '{print $1}')
         if [[ -n "$PUBLIC_IP" ]]; then
@@ -237,38 +300,44 @@ configure_network() {
             return 1
         fi
     fi
-    
+
     return 0
 }
 
 # Function to check prerequisites
 check_prerequisites() {
     print_status "Checking prerequisites..." "INFO"
-    
+
     # Check for root privileges
     if [ "$EUID" -ne 0 ]; then
         print_status "This script must be run as root" "ERROR"
         return 1
     fi
-    
+
     # Check for curl
     if ! command -v curl &> /dev/null; then
         print_status "curl is not installed. Please install curl first." "ERROR"
         return 1
     fi
-    
+
     # Check for Docker
     if ! command -v docker &> /dev/null; then
         print_status "Docker is not installed. Please install Docker first." "ERROR"
         return 1
     fi
-    
+
     # Check for Docker Compose
     if ! command -v docker-compose &> /dev/null; then
         print_status "Docker Compose is not installed. Please install Docker Compose first." "ERROR"
         return 1
     fi
-    
+
+    # Check for ZeroTier CLI if ZeroTier network ID is provided
+    if [ -n "$ZEROTIER_NETWORK_ID" ] && ! command -v zerotier-cli &> /dev/null; then
+        print_status "ZeroTier CLI is not installed. Please install ZeroTier CLI first." "ERROR"
+        return 1
+    fi
+
     print_status "All prerequisites are met." "SUCCESS"
     return 0
 }
@@ -276,86 +345,111 @@ check_prerequisites() {
 # Function to install Docker
 install_docker() {
     print_status "Installing Docker..." "INFO"
-    
+
     # Check if Docker is already installed
     if command -v docker &> /dev/null; then
         print_status "Docker is already installed." "SUCCESS"
         return 0
     fi
-    
-    # Install Docker
+
+    # Download and run the Docker installation script
     retry_command curl -fsSL https://get.docker.com -o get-docker.sh
     if [ $? -ne 0 ]; then
         print_status "Failed to download Docker installation script." "ERROR"
         return 1
     fi
-    
+
+    # Execute the Docker installation script
     sh get-docker.sh
     rm get-docker.sh
-    
-    # Start Docker service
+
+    # Start and enable Docker service
     systemctl start docker
     systemctl enable docker
-    
-    print_status "Docker installed successfully." "SUCCESS"
-    return 0
+
+    # Verify Docker installation
+    if command -v docker &> /dev/null; then
+        print_status "Docker installed successfully." "SUCCESS"
+        return 0
+    else
+        print_status "Docker installation failed." "ERROR"
+        return 1
+    fi
 }
 
 # Function to install Docker Compose
 install_docker_compose() {
     print_status "Installing Docker Compose..." "INFO"
-    
+
     # Check if Docker Compose is already installed
     if command -v docker-compose &> /dev/null; then
         print_status "Docker Compose is already installed." "SUCCESS"
         return 0
     fi
-    
-    # Install Docker Compose
-    retry_command curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+
+    # Download Docker Compose binary
+    local compose_url="https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)"
+    retry_command curl -L "$compose_url" -o /usr/local/bin/docker-compose
     if [ $? -ne 0 ]; then
         print_status "Failed to download Docker Compose." "ERROR"
         return 1
     fi
-    
+
+    # Make the Docker Compose binary executable
     chmod +x /usr/local/bin/docker-compose
-    
+
     # Verify Docker Compose installation
-    if ! command -v docker-compose &> /dev/null; then
+    if command -v docker-compose &> /dev/null; then
+        print_status "Docker Compose installed successfully." "SUCCESS"
+        return 0
+    else
         print_status "Docker Compose installation failed. Please check the installation path." "ERROR"
         return 1
     fi
-    
-    print_status "Docker Compose installed successfully." "SUCCESS"
-    return 0
 }
 
 # Function to set up domain
 setup_domain() {
     print_status "Setting up domain..." "INFO"
-    
+
+    # Check if a domain is specified
     if [ -z "$DOMAIN" ]; then
-        print_status "No domain specified. Skipping domain setup." "WARNING"
-        return 0
+        print_status "No domain specified. Setting up local domain configuration." "WARNING"
+        
+        # Set a default local domain name
+        DOMAIN="localhost.localdomain"
+        
+        # Optionally, add an entry to the /etc/hosts file
+        if ! grep -q "$DOMAIN" /etc/hosts; then
+            echo "127.0.0.1 $DOMAIN" | sudo tee -a /etc/hosts > /dev/null
+            print_status "Local domain $DOMAIN added to /etc/hosts." "INFO"
+        else
+            print_status "Local domain $DOMAIN already exists in /etc/hosts." "INFO"
+        fi
+    else
+        # Validate domain format
+        if ! [[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+$ ]]; then
+            print_status "Invalid domain format: $DOMAIN" "ERROR"
+            return 1
+        fi
     fi
-    
-    # Example: Validate domain format
-    if ! [[ "$DOMAIN" =~ ^[a-zA-Z0-9.-]+$ ]]; then
-        print_status "Invalid domain format: $DOMAIN" "ERROR"
-        return 1
-    fi
-    
-    print_status "Domain $DOMAIN is valid." "SUCCESS"
+
+    # Example: Additional domain setup steps can be added here
+    # For instance, configuring DNS records or SSL certificates
+
+    print_status "Domain $DOMAIN is valid and set up." "SUCCESS"
     return 0
 }
 
 # Function to generate Docker Compose configuration
 generate_docker_compose() {
     print_status "Generating Docker Compose configuration..." "INFO"
-    
+
+    # Define the installation directory for Docker Compose
     local install_dir="/opt/wazuh-docker"
     mkdir -p "$install_dir"
-    
+
+    # Create the Docker Compose configuration file
     cat > "$install_dir/docker-compose.yml" << EOF
 version: '3.9'
 services:
@@ -386,6 +480,7 @@ volumes:
   es_data:
 EOF
 
+    # Log success message
     print_status "Docker Compose configuration generated successfully." "SUCCESS"
     return 0
 }
@@ -393,29 +488,32 @@ EOF
 # Function to set up SSL
 setup_ssl() {
     print_status "Setting up SSL..." "INFO"
-    
+
+    # Check if SSL is enabled
     if [ "$USE_SSL" = false ]; then
         print_status "SSL is not enabled. Skipping SSL setup." "WARNING"
         return 0
     fi
-    
-    # Example: Use Let's Encrypt for SSL
+
+    # Check if Certbot is installed
     if ! command -v certbot &> /dev/null; then
         print_status "Certbot is not installed. Please install Certbot first." "ERROR"
         return 1
     fi
-    
+
+    # Obtain SSL certificate using Certbot
     retry_command certbot certonly --standalone -d "$DOMAIN" --email "$EMAIL" --agree-tos --non-interactive
     if [ $? -ne 0 ]; then
         print_status "Failed to obtain SSL certificate for $DOMAIN after multiple attempts." "ERROR"
         return 1
     fi
-    
+
+    # Verify the SSL certificate directory
     if [ ! -d "/etc/letsencrypt/live/$DOMAIN" ]; then
         print_status "SSL certificate directory not found for $DOMAIN" "ERROR"
         return 1
     fi
-    
+
     print_status "SSL certificate obtained for $DOMAIN" "SUCCESS"
     return 0
 }
@@ -423,20 +521,26 @@ setup_ssl() {
 # Function to start Docker containers
 start_wazuh_services() {
     print_status "Starting Wazuh services..." "INFO"
-    
+
+    # Define the installation directory for Docker Compose
     local install_dir="/opt/wazuh-docker"
+
+    # Check if the Docker Compose configuration file exists
     if [ ! -f "$install_dir/docker-compose.yml" ]; then
         print_status "Docker Compose configuration not found. Cannot start services." "ERROR"
         return 1
     fi
-    
+
+    # Navigate to the installation directory
     cd "$install_dir"
+
+    # Start the Docker containers using Docker Compose
     retry_command docker-compose up -d
     if [ $? -ne 0 ]; then
         print_status "Failed to start Docker containers after multiple attempts." "ERROR"
         return 1
     fi
-    
+
     print_status "Wazuh services started successfully." "SUCCESS"
     return 0
 }
@@ -444,25 +548,25 @@ start_wazuh_services() {
 # Function to verify installation
 verify_complete_installation() {
     print_status "Verifying installation..." "INFO"
-    
-    # Check if Wazuh services are running
+
+    # Check if Wazuh service is running
     if ! docker ps | grep -q wazuh; then
         print_status "Wazuh service is not running." "ERROR"
         return 1
     fi
-    
+
     # Check if Elasticsearch service is running
     if ! docker ps | grep -q elasticsearch; then
         print_status "Elasticsearch service is not running." "ERROR"
         return 1
     fi
-    
+
     # Check if Kibana service is running
     if ! docker ps | grep -q kibana; then
         print_status "Kibana service is not running." "ERROR"
         return 1
     fi
-    
+
     print_status "All services are running successfully." "SUCCESS"
     return 0
 }
@@ -470,8 +574,11 @@ verify_complete_installation() {
 # Function to save installation details
 save_installation_details() {
     print_status "Saving installation details..." "INFO"
-    
+
+    # Define the file to save installation details
     local details_file="${SCRIPT_DIR}/installation_details.txt"
+
+    # Write installation details to the file
     cat > "$details_file" << EOF
 ==============================================
 Wazuh Installation Details
@@ -491,87 +598,95 @@ Services:
 
 EOF
 
+    # Log success message
     print_status "Installation details saved to $details_file" "SUCCESS"
 }
 
 # Function to handle cleanup on error
 cleanup_on_error() {
-    local exit_code="$1"
-    local line_number="$2"
-    
+    local exit_code="$1"    # Exit code to return
+    local line_number="$2"  # Line number where the error occurred
+
     print_status "Cleaning up after error..." "ERROR"
-    
-    # Stop Docker containers
+
+    # Define the installation directory for Docker Compose
     local install_dir="/opt/wazuh-docker"
+
+    # Stop Docker containers if they are running
     if [ -f "$install_dir/docker-compose.yml" ]; then
         cd "$install_dir"
         docker-compose down
+        print_status "Stopped Docker containers." "INFO"
     fi
-    
+
     # Remove temporary files or directories if needed
     # Example: rm -rf /path/to/temp/dir
-    
+
+    # Log the error and exit
     print_status "Cleanup completed. Exiting with code $exit_code." "ERROR"
     exit "$exit_code"
 }
 
 # Main function to orchestrate the setup
 main() {
+    # Show the main banner
     show_banner "main"
+
+    # Initialize logging
     init_logging
-    
+
     # Check prerequisites
     if ! check_prerequisites; then
         handle_error "Prerequisite check failed" $LINENO
     fi
-    
+
     # Configure network
     if ! configure_network; then
         handle_error "Network configuration failed" $LINENO
     fi
-    
+
     # Set up domain
     if ! setup_domain; then
         handle_error "Domain setup failed" $LINENO
     fi
-    
+
     # Install Docker
     if ! install_docker; then
         handle_error "Docker installation failed" $LINENO
     fi
-    
+
     # Install Docker Compose
     if ! install_docker_compose; then
         handle_error "Docker Compose installation failed" $LINENO
     fi
-    
+
     # Generate Docker Compose configuration
     if ! generate_docker_compose; then
         handle_error "Failed to generate Docker Compose configuration" $LINENO
     fi
-    
+
     # Setup SSL if enabled
     if ! setup_ssl; then
         handle_error "SSL setup failed" $LINENO
     fi
-    
+
     # Start Wazuh services
     if ! start_wazuh_services; then
         handle_error "Failed to start Wazuh services" $LINENO
     fi
-    
+
     # Verify installation
     if ! verify_complete_installation; then
         handle_error "Installation verification failed" $LINENO
     fi
-    
+
     # Save installation details
     save_installation_details
-    
+
     # Show success banner
     show_banner "success"
     print_status "Installation completed successfully." "SUCCESS"
-    
+
     return 0
 }
 
