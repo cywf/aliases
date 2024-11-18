@@ -183,98 +183,51 @@ install_yubikey_software() {
     echo "Yubikey software installation complete."
 }
 
-# Function to display the menu and handle user choices
-display_menu() {
-    echo "Choose an option:"
-    echo "1. Setup USB Key for LUKS"
-    echo "2. Setup USB Key for sudo commands"
-    echo "3. Setup MFA for an application"
-    read -p "Enter your choice [1-3]: " choice
+# Function to setup Yubikey for LUKS
+setup_yubikey_for_luks() {
+    echo "Setting up Yubikey for LUKS..."
+    read -p "Enter the device path (e.g., /dev/sdX): " device
+    sudo cryptsetup luksAddKey "$device"
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to set up Yubikey for LUKS."
+        exit 1
+    fi
+    echo "Yubikey successfully set up for LUKS."
+}
 
-    case $choice in
+# Function to setup Yubikey for sudo commands
+setup_yubikey_for_sudo() {
+    echo "Setting up Yubikey for sudo commands..."
+    echo "auth required pam_u2f.so" | sudo tee -a /etc/pam.d/sudo
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to set up Yubikey for sudo commands."
+        exit 1
+    fi
+    echo "Yubikey successfully set up for sudo commands."
+}
+
+# Function to setup Yubikey for SSH
+setup_yubikey_for_ssh() {
+    echo "Setting up Yubikey for SSH..."
+    echo "Choose an SSH setup option:"
+    echo "1. FIDO2 SSH Setup"
+    echo "2. Non-FIDO2 SSH Setup"
+    read -p "Enter your choice [1-2]: " ssh_choice
+
+    case $ssh_choice in
         1)
-            echo "Setting up USB Key for LUKS..."
-            # Example logic for setting up USB Key for LUKS
-            read -p "Enter the device path (e.g., /dev/sdX): " device
-            sudo cryptsetup luksAddKey "$device"
-            if [ $? -ne 0 ]; then
-                echo "Error: Failed to set up USB Key for LUKS."
-                exit 1
-            fi
-            echo "USB Key successfully set up for LUKS."
+            setup_fido2_ssh
             ;;
         2)
-            echo "Setting up USB Key for sudo commands..."
-            # Example logic for setting up USB Key for sudo commands
-            echo "auth required pam_u2f.so" | sudo tee -a /etc/pam.d/sudo
-            if [ $? -ne 0 ]; then
-                echo "Error: Failed to set up USB Key for sudo commands."
-                exit 1
-            fi
-            echo "USB Key successfully set up for sudo commands."
-            ;;
-        3)
-            echo "Setting up MFA for an application..."
-            # Example logic for setting up MFA for an application
-            read -p "Enter the application name: " app_name
-            echo "auth required pam_u2f.so" | sudo tee -a /etc/pam.d/"$app_name"
-            if [ $? -ne 0 ]; then
-                echo "Error: Failed to set up MFA for $app_name."
-                exit 1
-            fi
-            echo "MFA successfully set up for $app_name."
+            setup_non_fido2_ssh
             ;;
         *)
-            echo "Invalid choice. Exiting."
-            exit 1
+            echo "Invalid choice. Skipping SSH setup."
             ;;
     esac
 }
 
-# Function to setup the USB key for user accounts
-setup_usb_for_user_accounts() {
-    echo "Setting up USB key for user accounts..."
-
-    # Step 1: Create the Yubico configuration directory
-    mkdir -p ~/.config/Yubico
-
-    # Step 2: Generate the U2F keys configuration
-    pamu2fcfg > ~/.config/Yubico/u2f_keys
-    if [ $? -ne 0 ]; then
-        echo "Error: Failed to generate U2F keys configuration."
-        exit 1
-    fi
-
-    echo "Please insert your USB key and press Enter to continue..."
-    read -r
-
-    # Step 3: Check if the system recognizes the USB key
-    if ! lsusb | grep -i "Yubico" > /dev/null; then
-        echo "Error: USB key not detected. Please ensure it is properly connected."
-        exit 1
-    fi
-
-    # Step 4-6: Update PAM configuration for sudo
-    PAM_SUDO_FILE="/etc/pam.d/sudo"
-    if ! grep -q "auth required pam_u2f.so" "$PAM_SUDO_FILE"; then
-        echo "auth required pam_u2f.so" | sudo tee -a "$PAM_SUDO_FILE"
-    fi
-
-    # Step 7-8: Update PAM configuration for gdm-password
-    PAM_GDM_FILE="/etc/pam.d/gdm-password"
-    if ! grep -q "auth required pam_u2f.so" "$PAM_GDM_FILE"; then
-        echo "auth required pam_u2f.so" | sudo tee -a "$PAM_GDM_FILE"
-    fi
-
-    # Step 9-10: Update PAM configuration for login
-    PAM_LOGIN_FILE="/etc/pam.d/login"
-    if ! grep -q "auth required pam_u2f.so" "$PAM_LOGIN_FILE"; then
-        echo "auth required pam_u2f.so" | sudo tee -a "$PAM_LOGIN_FILE"
-    fi
-
-    echo "Configuration complete. You should now be able to use your USB key for authentication."
-}
-
+# Function to setup USB for SSH with FIDO2-compatible devices
 setup_fido2_ssh() {
     echo "Setting up USB for SSH with FIDO2-compatible devices..."
 
@@ -325,10 +278,12 @@ setup_fido2_ssh() {
 
     if [ "$destination" = "github.com" ]; then
         echo "Setting up SSH key for GitHub..."
-        echo "Please log in to your GitHub account and add the following SSH key:"
-        cat ~/.ssh/id_ed25519_sk.pub
-        echo "Visit https://github.com/settings/keys to add your SSH key."
-        read -p "Press Enter after adding the SSH key to GitHub..."
+        echo "Attempting to copy SSH key to GitHub..."
+        ssh-copy-id -i ~/.ssh/id_ed25519_sk.pub git@github.com
+        if [ $? -ne 0 ]; then
+            echo "Error: Failed to copy SSH public key to GitHub."
+            exit 1
+        fi
     else
         ssh-copy-id -i ~/.ssh/id_ed25519_sk.pub "$destination"
         if [ $? -ne 0 ]; then
@@ -370,8 +325,13 @@ setup_non_fido2_ssh() {
 
     # Step 1: Install Yubikey repository and update
     echo "Adding Yubico repository and updating..."
-    sudo add-apt-repository ppa:yubico/stable -y
-    sudo apt update
+    if command -v apt > /dev/null; then
+        sudo add-apt-repository ppa:yubico/stable -y
+        sudo apt update
+    else
+        echo "Error: This setup currently supports only systems with apt package manager."
+        exit 1
+    fi
 
     # Step 2: Install Yubico Package
     echo "Installing libpam-yubico..."
@@ -385,31 +345,31 @@ setup_non_fido2_ssh() {
     AUTH_YUBIKEYS_FILE="/etc/ssh/authorized_yubikeys"
     echo "Configuring authorized Yubikeys..."
     sudo touch "$AUTH_YUBIKEYS_FILE"
-    sudo nano "$AUTH_YUBIKEYS_FILE"
     echo "Please add each user and their Yubikey prefix to $AUTH_YUBIKEYS_FILE."
+    sudo nano "$AUTH_YUBIKEYS_FILE"
 
-    # Step 5: Guide user to get API key
+    # Step 4: Guide user to get API key
     echo "Please visit https://upgrade.yubico.com/getapikey to obtain your API key."
     echo "Note down your Client ID and Secret Key. It's recommended to save them in a secure password manager like Bitwarden."
 
-    # Step 6: Edit PAM file
+    # Step 5: Edit PAM file
     PAM_SSHD_FILE="/etc/pam.d/sshd"
     echo "Editing PAM configuration for SSH..."
     read -p "Enter your Client ID: " client_id
     read -p "Enter your Secret Key: " secret_key
     echo "auth required pam_yubico.so id=$client_id key=$secret_key authfile=$AUTH_YUBIKEYS_FILE" | sudo tee -a "$PAM_SSHD_FILE"
 
-    # Step 7: Edit SSH configuration
+    # Step 6: Edit SSH configuration
     SSHD_CONFIG_FILE="/etc/ssh/sshd_config"
     echo "Editing SSH configuration..."
     sudo sed -i 's/^#ChallengeResponseAuthentication no/ChallengeResponseAuthentication yes/' "$SSHD_CONFIG_FILE"
     sudo sed -i 's/^#UsePAM no/UsePAM yes/' "$SSHD_CONFIG_FILE"
 
-    # Step 8: Restart SSH service
+    # Step 7: Restart SSH service
     echo "Restarting SSH service..."
     sudo systemctl restart ssh
 
-    # Step 9: Test SSH connection
+    # Step 8: Test SSH connection
     echo "Testing SSH connection..."
     echo "Open a new terminal and attempt to SSH into this machine. Your Yubikey should blink during authentication."
 
@@ -422,24 +382,26 @@ system_update
 install_lynis
 install_yubikey_software
 
-# Display menu for USB key setup options
-display_menu
+# Display menu for Yubikey setup options
+echo "Choose a Yubikey setup option:"
+echo "1. Setup Yubikey for LUKS"
+echo "2. Setup Yubikey for sudo commands"
+echo "3. Setup Yubikey for SSH"
+read -p "Enter your choice [1-3]: " choice
 
-# Prompt user for SSH setup option
-echo "Choose an SSH setup option:"
-echo "1. FIDO2 SSH Setup"
-echo "2. Non-FIDO2 SSH Setup"
-read -p "Enter your choice [1-2]: " ssh_choice
-
-case $ssh_choice in
+case $choice in
     1)
-        setup_fido2_ssh
+        setup_yubikey_for_luks
         ;;
     2)
-        setup_non_fido2_ssh
+        setup_yubikey_for_sudo
+        ;;
+    3)
+        setup_yubikey_for_ssh
         ;;
     *)
-        echo "Invalid choice. Skipping SSH setup."
+        echo "Invalid choice. Exiting."
+        exit 1
         ;;
 esac
 
