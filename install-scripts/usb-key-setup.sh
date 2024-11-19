@@ -405,7 +405,7 @@ case $choice in
         ;;
 esac
 
-# Setup USB key for user accounts
+# Setup USB key for user account
 setup_usb_for_user_accounts
 
 echo "Setup complete."
