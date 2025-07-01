@@ -24,6 +24,7 @@ alias editprofile="nano ~/.profile"
 alias editaliases="nano ~/.bash_aliases"
 alias q="quit"
 alias e="exit"
+alias off="sudo shutdown -h now"
 
 ## Networking
 
