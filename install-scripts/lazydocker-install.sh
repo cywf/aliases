@@ -3,7 +3,7 @@
 ############################################
 # Dev: KP
 # Date: May 17, 2025
-# Version: v1.0.2
+# Version: v1.0.3
 ############################################
 #
 set -euo pipefail
@@ -97,4 +97,27 @@ if command -v "${BINARY}" &>/dev/null; then
 else
   echo "❌ Installation failed: ${BINARY} not found in PATH."
   exit 1
+fi
+
+############################################
+# 8) Add alias to .bash_aliases and source ~/.bashrc
+############################################
+ALIAS_FILE="${HOME}/.bash_aliases"
+ALIAS_CMD="alias ldoc='lazydocker'"
+
+# Add alias only if it doesn't already exist
+if ! grep -Fxq "${ALIAS_CMD}" "${ALIAS_FILE}" 2>/dev/null; then
+  echo "${ALIAS_CMD}" >> "${ALIAS_FILE}"
+  echo "-> Added alias: ldoc -> lazydocker to ${ALIAS_FILE}"
+else
+  echo "-> Alias 'ldoc' already exists in ${ALIAS_FILE}"
+fi
+
+# Source .bashrc to update the shell environment
+if [ -f "${HOME}/.bashrc" ]; then
+  echo "-> Sourcing ~/.bashrc"
+  # shellcheck disable=SC1090
+  source "${HOME}/.bashrc"
+else
+  echo "-> ~/.bashrc not found. Please reload your shell manually."
 fi
