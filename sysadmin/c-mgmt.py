@@ -9,6 +9,8 @@ Fixes & updates in this revision:
   feature set requires running in a real terminal with Docker (CLI mode).
 - Adds self-tests to verify: non-interactive menu defaulting, safe input fallback,
   and that `main()` returns without raising `SystemExit` in Canvas.
+- Implements **Remover Mode** to stop containers, remove containers, images,
+  volumes, networks, and prune the system.
 
 At startup, the script auto-detects environment:
 - Canvas Mode → safe verification only (self-tests + Status-Report fallback).
@@ -160,7 +162,7 @@ def menu(title: str, options: list[str], default_index: int = 1) -> int:
         return int(raw)
     return default_index
 
-# ==== Modes (placeholders retained; CLI runs these on a real host) ====
+# ==== Modes ====
 
 def backup_menu():
     banner()
@@ -174,7 +176,26 @@ def updater_menu():
 
 def remover_menu():
     banner()
-    say("Remover mode placeholder")
+    say("Remover Mode: Stop & Remove Docker Resources")
+
+    if not require_docker():
+        warn("Docker not available; cannot perform remover operations.")
+        return
+
+    confirm = safe_input("Are you sure you want to stop & remove ALL containers, images, volumes, and networks? (yes/NO): ", "NO")
+    if confirm.lower() != "yes":
+        warn("Aborted remover operation.")
+        return
+
+    shell("docker ps -aq | xargs -r docker update --restart=no", job_name="disable-restart")
+    shell("docker stop $(docker ps -aq) 2>/dev/null || true", job_name="stop-containers")
+    shell("docker rm -f $(docker ps -aq) 2>/dev/null || true", job_name="rm-containers")
+    shell("docker rmi -f $(docker images -q) 2>/dev/null || true", job_name="rm-images")
+    shell("docker volume rm $(docker volume ls -q) 2>/dev/null || true", job_name="rm-volumes")
+    shell("docker network rm $(docker network ls | grep -vE 'bridge|host|none' | awk '{print $1}') 2>/dev/null || true", job_name="rm-networks")
+    shell("docker system prune -a --volumes -f", job_name="system-prune")
+
+    say("All Docker resources cleaned.")
 
 
 def status_menu():
@@ -208,7 +229,6 @@ def self_tests() -> int:
     # Test 3: main() should return an int without raising SystemExit in Canvas
     ok3 = True
     try:
-        # Simulate Canvas by forcing non-interactive; call a trimmed path
         os.environ["CMGMT_FORCE_NONINTERACTIVE"] = "1"
         rc = quick_status_report()
         ok3 = isinstance(rc, int)
@@ -268,10 +288,8 @@ def main() -> int:
 
     mode = select_environment()
     if mode == "canvas":
-        # In Canvas/non-interactive, run a minimal, safe path
         return quick_status_report()
 
-    # CLI mode — run full menu loop (placeholders currently)
     while True:
         banner()
         i = menu("Choose mode", ["Backup", "Updater", "Remover", "Status", "Exit"], 5)
@@ -287,13 +305,10 @@ def main() -> int:
             return 0
 
 # ==== Friendly exit wrapper (avoid SystemExit in Canvas) ====
-
 if __name__ == "__main__":
     rc = main()
     if (IS_TTY_IN and IS_TTY_OUT) or os.getenv("CMGMT_EXIT") == "1":
-        # Real terminals and CI can opt-in to strict exits
         sys.exit(rc)
     else:
-        # Canvas/notebooks: print rc and keep interpreter happy
         print(f"[cmgmt] Exit code: {rc}")
         print("[cmgmt] Hint: For full functionality, run in a terminal: python3 c-mgmt.py")
