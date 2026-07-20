@@ -18,7 +18,7 @@ system_update() {
     echo "Updating system..."
     
     # Determine the package manager
-    if command -v apt > /dev/null; then
+    if command -v apt-get > /dev/null; then
         PACKAGE_MANAGER="apt"
     elif command -v yum > /dev/null; then
         PACKAGE_MANAGER="yum"
@@ -34,7 +34,7 @@ system_update() {
     # Perform updates based on the package manager
     case $PACKAGE_MANAGER in
         apt)
-            sudo apt update && sudo apt upgrade -y
+            sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
             ;;
         yum)
             sudo yum update -y
@@ -59,7 +59,7 @@ install_lynis() {
     echo "Installing Lynis..."
 
     # Determine the package manager
-    if command -v apt > /dev/null; then
+    if command -v apt-get > /dev/null; then
         PACKAGE_MANAGER="apt"
     elif command -v yum > /dev/null; then
         PACKAGE_MANAGER="yum"
@@ -75,7 +75,7 @@ install_lynis() {
     # Attempt to install Lynis using the package manager
     case $PACKAGE_MANAGER in
         apt)
-            sudo apt install lynis -y
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y lynis
             ;;
         yum)
             sudo yum install lynis -y
@@ -116,7 +116,7 @@ install_yubikey_software() {
     echo "Installing Yubikey software..."
 
     # Determine the package manager
-    if command -v apt > /dev/null; then
+    if command -v apt-get > /dev/null; then
         PACKAGE_MANAGER="apt"
     elif command -v yum > /dev/null; then
         PACKAGE_MANAGER="yum"
@@ -132,7 +132,7 @@ install_yubikey_software() {
     # Attempt to install Yubikey software and libpam-u2f using the package manager
     case $PACKAGE_MANAGER in
         apt)
-            sudo apt install yubikey-personalization yubikey-manager libpam-u2f -y
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y yubikey-personalization yubikey-manager libpam-u2f
             ;;
         yum)
             sudo yum install yubikey-personalization yubikey-manager pam-u2f -y
@@ -233,8 +233,8 @@ setup_fido2_ssh() {
 
     # Step 1: Update system
     echo "Updating system..."
-    if command -v apt > /dev/null; then
-        sudo apt update && sudo apt upgrade -y
+    if command -v apt-get > /dev/null; then
+        sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
     elif command -v yum > /dev/null; then
         sudo yum update -y
     elif command -v dnf > /dev/null; then
@@ -246,10 +246,10 @@ setup_fido2_ssh() {
         exit 1
     fi
 
-    # Step 2: Install libfido2-dev
-    echo "Installing libfido2-dev..."
-    if command -v apt > /dev/null; then
-        sudo apt install libfido2-dev -y
+    # Step 2: Install FIDO2 support from current distro packages.
+    echo "Installing FIDO2 support packages..."
+    if command -v apt-get > /dev/null; then
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y libfido2-1 libfido2-dev openssh-client
     elif command -v yum > /dev/null; then
         sudo yum install libfido2-devel -y
     elif command -v dnf > /dev/null; then
@@ -325,9 +325,9 @@ setup_non_fido2_ssh() {
 
     # Step 1: Install Yubikey repository and update
     echo "Adding Yubico repository and updating..."
-    if command -v apt > /dev/null; then
+    if command -v apt-get > /dev/null; then
         sudo add-apt-repository ppa:yubico/stable -y
-        sudo apt update
+        sudo apt-get update
     else
         echo "Error: This setup currently supports only systems with apt package manager."
         exit 1
@@ -335,7 +335,7 @@ setup_non_fido2_ssh() {
 
     # Step 2: Install Yubico Package
     echo "Installing libpam-yubico..."
-    sudo apt install libpam-yubico -y
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y libpam-yubico
     if [ $? -ne 0 ]; then
         echo "Error: Failed to install libpam-yubico."
         exit 1

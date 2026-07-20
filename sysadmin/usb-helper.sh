@@ -39,6 +39,17 @@ function loading_bar {
     echo " done."
 }
 
+# Convert a path's apparent size to whole megabytes. `du -sh` emits mixed units
+# (K/M/G/T), so use `du -sm` for arithmetic-safe numbers.
+function size_mb {
+    local path="$1"
+    if [ -e "$path" ]; then
+        du -sm "$path" 2>/dev/null | awk '{print $1+0}'
+    else
+        echo 0
+    fi
+}
+
 # Check disk space
 function check_disk_space {
     echo "Checking available disk space..."
@@ -57,23 +68,30 @@ function check_disk_space {
 # Attempt to free up disk space
 function free_up_space {
     echo "Attempting to free up disk space..."
-    CACHED_SIZE_MB=$(du -sh /var/cache/apt 2>/dev/null | awk '{print $1}' | sed 's/M//')
-    TEMP_SIZE_MB=$(du -sh /tmp 2>/dev/null | awk '{print $1}' | sed 's/M//')
+    CACHED_SIZE_MB=$(size_mb /var/cache/apt)
+    TEMP_SIZE_MB=$(size_mb /tmp)
 
     echo "Cache size: ${CACHED_SIZE_MB:-0} MB, Temp size: ${TEMP_SIZE_MB:-0} MB."
-    TOTAL_FREED=$((CACHED_SIZE_MB + TEMP_SIZE_MB))
+    POTENTIAL_FREED=$((CACHED_SIZE_MB + TEMP_SIZE_MB))
 
-    if [ "$TOTAL_FREED" -eq 0 ]; then
+    if [ "$POTENTIAL_FREED" -eq 0 ]; then
         echo "No removable cache or temp files found to free space."
         return 1
     fi
 
-    read -p "Do you want to clear /var/cache/apt and /tmp to free up $TOTAL_FREED MB? (yes/no): " CLEAR_CHOICE
+    read -p "Do you want to run safe cleanup (apt-get clean and stale /tmp files older than 24h)? Potential space: $POTENTIAL_FREED MB. (yes/no): " CLEAR_CHOICE
     if [[ "$CLEAR_CHOICE" == "yes" ]]; then
-        echo "Clearing /var/cache/apt and /tmp..."
-        rm -rf /var/cache/apt/*
-        rm -rf /tmp/*
-        echo "Freed up $TOTAL_FREED MB."
+        BEFORE_AVAILABLE_MB=$(df -Pm / | awk 'NR==2 {print $4+0}')
+        echo "Cleaning apt package cache..."
+        apt-get clean
+        echo "Removing stale top-level /tmp entries older than 24 hours..."
+        find /tmp -mindepth 1 -maxdepth 1 -xdev -mtime +1 -exec rm -rf -- {} +
+        AFTER_AVAILABLE_MB=$(df -Pm / | awk 'NR==2 {print $4+0}')
+        TOTAL_FREED=$((AFTER_AVAILABLE_MB - BEFORE_AVAILABLE_MB))
+        if [ "$TOTAL_FREED" -lt 0 ]; then
+            TOTAL_FREED=0
+        fi
+        echo "Freed approximately $TOTAL_FREED MB."
         return 0
     else
         echo "Space cleanup canceled by user."
@@ -84,12 +102,12 @@ function free_up_space {
 # Check for required dependencies
 function check_dependencies {
     echo "Gathering required tools..."
-    dependencies=(lsblk mkfs.ext4 dd curl)
+    dependencies=(lsblk mkfs.ext4 dd curl find awk)
     REQUIRED_SPACE_MB=500 # Estimate for dependencies
 
     for dep in "${dependencies[@]}"; do
         echo -n "Checking for $dep..."
-        if ! command -v $dep &> /dev/null; then
+        if ! command -v "$dep" &> /dev/null; then
             echo " not found."
             read -p "Would you like to install $dep? (yes/no): " INSTALL_CHOICE
             if [[ "$INSTALL_CHOICE" == "yes" ]]; then
@@ -100,7 +118,7 @@ function check_dependencies {
                         exit 1
                     fi
                 fi
-                apt-get install -y $dep
+                apt-get install -y "$dep"
                 if [ $? -ne 0 ]; then
                     echo "ERROR: Failed to install $dep. Please check your internet connection or package manager."
                     exit 1
@@ -119,7 +137,8 @@ function check_dependencies {
 # Display available USB devices
 function list_usb_devices {
     echo "Detecting USB devices..."
-    lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT | grep -v "sr0" | grep -E "^sd"
+    lsblk -dpno NAME,TRAN,RM,TYPE,SIZE,FSTYPE,LABEL,MOUNTPOINT | \
+        awk '$4 == "disk" && ($2 == "usb" || $3 == "1") {print}'
 }
 
 # Option 1: Extend current storage
@@ -173,41 +192,47 @@ function extend_storage {
 function write_ubuntu_image {
     save_checkpoint "write_ubuntu_image"
     echo "You selected to write an Ubuntu Server image to USB."
-    list_usb_devices
+    local attempt max_attempts
+    max_attempts=3
 
-    # Prompt the user to select a device
-    read -p "Enter the device name (e.g., sdb) to write the image to: " DEVICE
-    DEVICE_PATH="/dev/$DEVICE"
+    for attempt in $(seq 1 "$max_attempts"); do
+        list_usb_devices
 
-    # Verify the selected device
-    if [ ! -b "$DEVICE_PATH" ]; then
-        echo "ERROR: Device $DEVICE_PATH does not exist. Exiting."
-        exit 1
-    fi
+        # Prompt the user to select a device
+        read -p "Enter the device path (e.g., /dev/sdb or /dev/nvme0n1) to write the image to: " DEVICE_PATH
 
-    # Confirm action with the user
-    echo "WARNING: This will overwrite all data on $DEVICE_PATH."
-    read -p "Are you sure you want to proceed? (yes/no): " CONFIRM
-    if [[ "$CONFIRM" != "yes" ]]; then
-        echo "Aborting."
-        exit 1
-    fi
+        # Verify the selected device
+        if [ ! -b "$DEVICE_PATH" ]; then
+            echo "ERROR: Device $DEVICE_PATH does not exist."
+            continue
+        fi
 
-    # Stream Ubuntu Server image directly to USB
-    UBUNTU_URL="https://releases.ubuntu.com/24.04.1/ubuntu-24.04.1-live-server-amd64.iso"
-    echo "Streaming Ubuntu Server 24.04.1 LTS image directly to $DEVICE_PATH..."
-    curl -L "$UBUNTU_URL" | dd of="$DEVICE_PATH" bs=4M status=progress && sync
-    if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to write the Ubuntu Server image to $DEVICE_PATH."
-        read -p "Do you want to retry the operation? (yes/no): " RETRY
-        if [[ "$RETRY" == "yes" ]]; then
-            write_ubuntu_image
-        else
+        # Confirm action with the user
+        echo "WARNING: This will overwrite all data on $DEVICE_PATH."
+        read -p "Are you sure you want to proceed? (yes/no): " CONFIRM
+        if [[ "$CONFIRM" != "yes" ]]; then
+            echo "Aborting."
             exit 1
         fi
-    fi
-    echo "Ubuntu Server image has been successfully written to $DEVICE_PATH."
-    clear_checkpoint
+
+        # Stream Ubuntu Server image directly to USB
+        UBUNTU_URL="https://releases.ubuntu.com/24.04/ubuntu-24.04.4-live-server-amd64.iso"
+        echo "Streaming Ubuntu Server 24.04.4 LTS image directly to $DEVICE_PATH..."
+        if curl -fL "$UBUNTU_URL" | dd of="$DEVICE_PATH" bs=4M status=progress && sync; then
+            echo "Ubuntu Server image has been successfully written to $DEVICE_PATH."
+            clear_checkpoint
+            return 0
+        fi
+
+        echo "ERROR: Failed to write the Ubuntu Server image to $DEVICE_PATH (attempt $attempt/$max_attempts)."
+        if [ "$attempt" -lt "$max_attempts" ]; then
+            read -p "Do you want to retry the operation? (yes/no): " RETRY
+            [[ "$RETRY" == "yes" ]] || exit 1
+        fi
+    done
+
+    echo "ERROR: Failed to write the Ubuntu Server image after $max_attempts attempts."
+    exit 1
 }
 
 # Main menu
