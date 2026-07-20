@@ -154,7 +154,16 @@ alias hermesusb="hermes-portable-usb"
 alias hermes-usb="hermes-portable-usb"
 alias sentinel="hermes-portable-usb"
 
-# alias automode=""  # TODO: Add automode command
+# Explicit automode launcher. Set AUTOMODE_CMD to the local autonomous-agent
+# command you trust, then run: automode [args...]
+automode() {
+  if [ -z "${AUTOMODE_CMD:-}" ]; then
+    echo "Set AUTOMODE_CMD to the autonomous-agent command you want to run." >&2
+    echo "Example: export AUTOMODE_CMD='your-agent --auto'" >&2
+    return 1
+  fi
+  command ${AUTOMODE_CMD} "$@"
+}
 
 # =============================================================================
 # END OF BASH ALIASES
