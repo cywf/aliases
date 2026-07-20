@@ -68,21 +68,53 @@ NONINTERACTIVE = FORCE_NONINTERACTIVE or not (IS_TTY_IN and IS_TTY_OUT)
 
 # ==== Root dir selection ====
 
+def _ensure_dir(path: Path) -> Optional[Path]:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".write-test-{os.getpid()}"
+        probe.write_text("ok")
+        probe.unlink()
+        return path
+    except OSError:
+        return None
+
+
 def _pick_root() -> Path:
+    """Select a writable data root without assuming /mnt/data or /tmp.
+
+    Precedence:
+    1. CMGMT_ROOT, when explicitly provided.
+    2. XDG_STATE_HOME/cmgmt, or ~/.local/state/cmgmt.
+    3. /mnt/data/cmgmt for existing deployments that expect it.
+    4. /tmp/cmgmt as a last-resort ephemeral location.
+    5. ./cmgmt_data if everything else is unavailable.
+    """
     env = os.getenv("CMGMT_ROOT")
     if env:
-        p = Path(env)
-        p.mkdir(parents=True, exist_ok=True)
+        p = _ensure_dir(Path(env).expanduser())
+        if p is None:
+            raise RuntimeError(f"CMGMT_ROOT is not writable: {env}")
         return p
-    for candidate in (Path("/mnt/data/cmgmt"), Path("/tmp/cmgmt")):
+
+    xdg_state_home = os.getenv("XDG_STATE_HOME")
+    if xdg_state_home:
+        state_home = Path(xdg_state_home).expanduser()
+    else:
         try:
-            candidate.mkdir(parents=True, exist_ok=True)
-            return candidate
-        except Exception:
-            continue
-    p = Path.cwd() / "cmgmt_data"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+            state_home = Path.home() / ".local" / "state"
+        except RuntimeError:
+            state_home = Path("/tmp")
+    candidates = (
+        state_home / "cmgmt",
+        Path("/mnt/data/cmgmt"),
+        Path("/tmp/cmgmt"),
+        Path.cwd() / "cmgmt_data",
+    )
+    for candidate in candidates:
+        p = _ensure_dir(candidate)
+        if p is not None:
+            return p
+    raise RuntimeError("Unable to create a writable C-MGMT data directory")
 
 ROOT = _pick_root()
 JOBS_DIR = ROOT / "jobs"
@@ -258,7 +290,7 @@ def self_tests() -> int:
     ok3 = True
     try:
         os.environ["CMGMT_FORCE_NONINTERACTIVE"] = "1"
-        rc = quick_status_report()
+        rc = quick_status_report(include_docker=False)
         ok3 = isinstance(rc, int)
     finally:
         os.environ.pop("CMGMT_FORCE_NONINTERACTIVE", None)
@@ -282,24 +314,25 @@ def select_environment() -> str:
 
 # ==== Quick Status path for Canvas ====
 
-def docker_snapshot() -> None:
+def docker_snapshot(run_command=shell) -> None:
     if not cmd_exists("docker"):
         warn("Docker not found; showing what we can.")
         return
     print("Containers:")
-    os.system("docker ps -a")
+    run_command("docker ps -a")
     print("\nImages:")
-    os.system("docker images")
+    run_command("docker images")
     print("\nVolumes:")
-    os.system("docker volume ls")
+    run_command("docker volume ls")
     print("\nNetworks:")
-    os.system("docker network ls")
+    run_command("docker network ls")
 
 
-def quick_status_report() -> int:
+def quick_status_report(include_docker: bool = True) -> int:
     say("Detected non-interactive environment — generating Status-Report…")
     print("No jobs found." if not list(JOBS_DIR.glob("*")) else "Jobs present.")
-    docker_snapshot()
+    if include_docker:
+        docker_snapshot()
     print_canvas_hint()
     return 0
 
