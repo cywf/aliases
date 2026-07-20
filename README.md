@@ -33,8 +33,8 @@ The toolkit is organized into several directories, each focusing on a specific d
 - **Networking**: Configuration examples and documentation
 - **System Administration**: Tools for system management
 - **Development Tools**: Resources for development environments
-- **HTB**: Penetration testing tools for Hack The Box
-- **TAK**: Team Awareness Kit setup and configuration
+- **HTB**: Pointer to the canonical HTB toolkit repository
+- **TAK**: Pointer to the canonical TAK toolkit repository
 - **StackScripts**: Linode automation scripts
 
 ## Prerequisites
@@ -190,40 +190,21 @@ The `dev/` directory contains development-related resources:
 
 ## Hack The Box (HTB)
 
-The `htb/` directory contains Python tools for penetration testing:
+HTB-specific tools have moved out of this general aliases repository.
 
-- **main.py** - Main orchestration script
-- **setup.py** - Environment setup
-- **tools.py** - Various penetration testing tools
-- **nmap_payload_gen.py** - Nmap payload generator
-- **error_handling.py** - Error handling utilities
+- Canonical repo: <https://github.com/cywf/htb-helper>
+- Local pointer: [`htb/README.md`](htb/README.md)
 
-### Usage
-
-```bash
-cd htb
-python3 main.py
-```
+Use `cywf/htb-helper` for HTB setup workflows, Nmap/payload helpers, CTF scripts, documentation, issues, and pull requests.
 
 ## TAK (Team Awareness Kit)
 
-The `tak/` directory contains scripts and documentation for TAK setup:
+TAK-specific setup assets have moved out of this general aliases repository.
 
-- **setup_tak.sh** - Automated TAK environment setup with tmux
-- **tak_setup.py** - Python-based TAK configuration
-- **docker.md** - Docker configuration for TAK
-- **tak-server.md** - TAK server setup guide
-- **tak-client.md** - TAK client setup guide
-- **zerotier.md** - ZeroTier integration with TAK
-- **tailscale.md** - Tailscale integration with TAK
+- Canonical repo: <https://github.com/cywf/otg-tak>
+- Local pointer: [`tak/README.md`](tak/README.md)
 
-### Usage
-
-```bash
-cd tak
-chmod +x setup_tak.sh
-./setup_tak.sh
-```
+Use `cywf/otg-tak` for TAK server/client setup, Docker/Tailscale/ZeroTier notes, deployment automation, issues, and pull requests.
 
 ## StackScripts
 
@@ -332,38 +313,21 @@ python3 sysadmin/c-mgmt.py
 
 ### Penetration Testing Setup
 
-```bash
-# Set up HTB tools for penetration testing
-cd htb
-python3 main.py
+HTB tools moved to their dedicated repository: <https://github.com/cywf/htb-helper>.
 
-# Follow the prompts to configure for a specific machine
-# Enter machine handle, name, IP, and type
-# The tool will automatically:
-# - Create directory structure
-# - Install necessary tools
-# - Perform Nmap scans
-# - Generate payloads
-```
+See [`htb/README.md`](htb/README.md) for the migration pointer and follow the canonical repo's current README for setup and usage.
 
 ### TAK Environment Setup
 
 ```bash
-# Set up TAK environment with monitoring
-cd tak
-chmod +x setup_tak.sh
-./setup_tak.sh
+# TAK setup moved to its dedicated repository.
+git clone https://github.com/cywf/otg-tak.git
+cd otg-tak
 
-# The script will:
-# - Check for dependencies
-# - Install missing tools
-# - Start Docker service
-# - Launch tmux session with monitoring tools
-
-# For advanced TAK configuration
-python3 tak_setup.py
-# Follow the interactive wizard for detailed setup
+# Follow that repository's README/INSTALL.md for deployment options.
 ```
+
+See [`tak/README.md`](tak/README.md) for the migration pointer.
 
 ### Cloud Infrastructure Setup
 

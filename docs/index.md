@@ -110,52 +110,13 @@ This index provides links to all documentation files in the repository, organize
 
 ## Hack The Box (HTB)
 
-### Main Documentation
-
-- [htb/README.md](htb/README.md) - HTB tools overview
-
-### Tool Documentation
-
-- [htb/docs/error_handling.md](htb/docs/error_handling.md) - Error handling module
-- [htb/docs/setup.md](htb/docs/setup.md) - Setup module
-- [htb/docs/tools.md](htb/docs/tools.md) - Tools module
-- [htb/docs/nmap_payload_gen.md](htb/docs/nmap_payload_gen.md) - Nmap and payload generation module
-
-### Scripts
-
-- [htb/error_handling.py](htb/error_handling.py) - Error handling module
-- [htb/main.py](htb/main.py) - Main orchestration script
-- [htb/nmap_payload_gen.py](htb/nmap_payload_gen.py) - Nmap and payload generation module
-- [htb/setup.py](htb/setup.py) - Setup module
-- [htb/tools.py](htb/tools.py) - Tools module
+- [htb/README.md](htb/README.md) - Migration pointer to the canonical HTB toolkit
+- Canonical repository: <https://github.com/cywf/htb-helper>
 
 ## Team Awareness Kit (TAK)
 
-### Main Documentation
-
-- [tak/README.md](tak/README.md) - TAK setup overview
-
-### Setup Scripts
-
-- [tak/setup_tak.sh](tak/setup_tak.sh) - TAK environment setup script
-- [tak/tak_setup.py](tak/tak_setup.py) - Advanced TAK setup script
-
-### Configuration Documentation
-
-- [tak/docs/docker.md](tak/docs/docker.md) - Docker configuration for TAK
-- [tak/docs/tailscale.md](tak/docs/tailscale.md) - Tailscale integration
-- [tak/docs/tak-client.md](tak/docs/tak-client.md) - TAK client setup
-- [tak/docs/tak-server.md](tak/docs/tak-server.md) - TAK server setup
-- [tak/docs/zerotier.md](tak/docs/zerotier.md) - ZeroTier integration
-- [tak/docs/tak_setup.md](tak/docs/tak_setup.md) - Advanced TAK setup script documentation
-
-### Guides
-
-- [tak/docker.md](tak/docker.md) - Docker configuration for TAK
-- [tak/tailscale.md](tak/tailscale.md) - Tailscale integration
-- [tak/tak-client.md](tak/tak-client.md) - TAK client setup
-- [tak/tak-server.md](tak/tak-server.md) - TAK server setup
-- [tak/zerotier.md](tak/zerotier.md) - ZeroTier integration
+- [tak/README.md](tak/README.md) - Migration pointer to the canonical TAK toolkit
+- Canonical repository: <https://github.com/cywf/otg-tak>
 
 ## StackScripts
 
