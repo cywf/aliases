@@ -16,7 +16,7 @@ This matrix records the expected package managers, major dependencies, and valid
 | apt | `apt-get update` | `DEBIAN_FRONTEND=noninteractive apt-get install -y <packages>` |
 | dnf | `dnf makecache` | `dnf install -y <packages>` |
 | yum | `yum makecache` | `yum install -y <packages>` |
-| pacman | `pacman -Sy` | `pacman -S --noconfirm <packages>` |
+| pacman | `pacman -Syu --noconfirm` | `pacman -Syu --noconfirm <packages>` |
 | brew | `brew update` | `brew install <packages>` |
 
 ## Script categories
