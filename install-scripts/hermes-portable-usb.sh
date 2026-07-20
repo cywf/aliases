@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-VERSION="3.3.1"
+VERSION="3.4.0"
 PORTABLE_REPO_URL="${HERMES_PORTABLE_REPO_URL:-https://github.com/techjarves/Local-Hermes-Portable.git}"
 PORTABLE_ARCHIVE_URL="${HERMES_PORTABLE_ARCHIVE_URL:-https://github.com/techjarves/Local-Hermes-Portable/archive/refs/heads/main.tar.gz}"
 PORTABLE_DIR_NAME="${HERMES_PORTABLE_DIR_NAME:-Local-Hermes-Portable}"
@@ -300,6 +300,24 @@ common_mount_roots() {
   printf '/media\n/mnt\n/Volumes\n'
 }
 
+# Scan /media/*/ for any mounted USB drives dynamically, regardless of label.
+# This catches drives mounted under any user's /media/<user>/<label> path,
+# and works even when the parent directory is not traversable by the current user.
+# Uses /proc/mounts which is world-readable and does not require directory
+# traversal permission on the parent.
+scan_media_subdirs() {
+  local dir
+  [ -d /media ] || return 0
+  # Read /proc/mounts directly (world-readable) to find mountpoints under /media/.
+  # This works even when the current user cannot traverse /media/<user>/ dirs.
+  awk '$2 ~ /^\/media\// && $2 != "/media/" {print $2}' /proc/mounts 2>/dev/null | \
+    while IFS= read -r dir; do
+      # Skip the current user's own media dir (already covered by common_mount_roots).
+      [ "$dir" = "/media/${USER:-root}" ] && continue
+      printf '%s\n' "$dir"
+    done
+}
+
 parent_candidates_from_path() {
   local path="$1" dir
   dir="$(abs_path "$path")"
@@ -325,11 +343,17 @@ usb_mount_roots() {
     printf '/media/%s/Samsung USB\n' "$USER"
     printf '/media/%s/SAMSUNG\n' "$USER"
     printf '/media/%s/BAR PLUS\n' "$USER"
+    printf '/media/%s/SENTINEL\n' "$USER"
     printf '/run/media/%s/Samsung USB\n' "$USER"
     printf '/run/media/%s/SAMSUNG\n' "$USER"
     printf '/run/media/%s/BAR PLUS\n' "$USER"
+    printf '/run/media/%s/SENTINEL\n' "$USER"
   }
-  printf '/Volumes/Samsung USB\n/Volumes/SAMSUNG\n/Volumes/BAR PLUS\n'
+  printf '/Volumes/Samsung USB\n/Volumes/SAMSUNG\n/Volumes/BAR PLUS\n/Volumes/SENTINEL\n'
+
+  # Dynamic scan: check every subdirectory under /media/ for mounted drives.
+  # This catches any USB label on any system without hardcoding.
+  scan_media_subdirs || true
 }
 
 candidate_roots_for_existing_install() {
