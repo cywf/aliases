@@ -100,7 +100,7 @@ install_lynis() {
             fi
             cd lynis || exit
             sudo ./lynis audit system
-            cd ..
+            cd .. || exit 1
         else
             echo "Error: Git is not installed. Cannot clone Lynis."
             exit 1
@@ -160,7 +160,7 @@ install_yubikey_software() {
                 echo "Error: Manual installation of Yubikey Manager failed."
                 exit 1
             fi
-            cd ..
+            cd .. || exit 1
 
             # Download and install libpam-u2f
             curl -LO https://developers.yubico.com/pam-u2f/Releases/pam-u2f-latest.tar.gz
@@ -173,7 +173,7 @@ install_yubikey_software() {
                 echo "Error: Manual installation of libpam-u2f failed."
                 exit 1
             fi
-            cd ..
+            cd .. || exit 1
         else
             echo "Error: curl is not installed. Cannot download Yubikey software."
             exit 1

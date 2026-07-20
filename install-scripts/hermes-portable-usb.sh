@@ -666,10 +666,10 @@ fi
 
 if [ "$USE_PLATFORM_LAUNCHER" = "1" ]; then
   log "${GREEN}[ok]${NC} Starting platform launcher: $LAUNCHER"
-  cd "$ROOT"
+  cd "$ROOT" || die "Failed to enter portable root: $ROOT"
   exec bash "$LAUNCHER" "${EXTRA_ARGS[@]}"
 fi
 
 log "${GREEN}[ok]${NC} Starting portable Hermes: $HERMES_LAUNCH"
-cd "$ROOT/hermes"
+cd "$ROOT/hermes" || die "Failed to enter Hermes directory: $ROOT/hermes"
 exec bash "$HERMES_LAUNCH" "${EXTRA_ARGS[@]}"
