@@ -71,6 +71,9 @@ NONINTERACTIVE = FORCE_NONINTERACTIVE or not (IS_TTY_IN and IS_TTY_OUT)
 def _ensure_dir(path: Path) -> Optional[Path]:
     try:
         path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".write-test-{os.getpid()}"
+        probe.write_text("ok")
+        probe.unlink()
         return path
     except OSError:
         return None
@@ -93,7 +96,14 @@ def _pick_root() -> Path:
             raise RuntimeError(f"CMGMT_ROOT is not writable: {env}")
         return p
 
-    state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    xdg_state_home = os.getenv("XDG_STATE_HOME")
+    if xdg_state_home:
+        state_home = Path(xdg_state_home).expanduser()
+    else:
+        try:
+            state_home = Path.home() / ".local" / "state"
+        except RuntimeError:
+            state_home = Path("/tmp")
     candidates = (
         state_home / "cmgmt",
         Path("/mnt/data/cmgmt"),
