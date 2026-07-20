@@ -24,7 +24,7 @@ This script automates the setup of Git with SSH configuration for GitHub. It ins
 
 ```bash
 chmod +x git_setup.sh
-./git_setup.sh
+./git_setup.sh "Your Name" "you@example.com"
 ```
 
 ## What the Script Does
@@ -37,8 +37,8 @@ chmod +x git_setup.sh
    - Installs Git if missing
 
 3. **SSH Key Generation**
-   - Generates a 4096-bit RSA SSH key pair
-   - Uses a default email placeholder (should be customized)
+   - Generates an ed25519 SSH key pair
+   - Uses the required email argument as the key comment
 
 4. **SSH Agent Configuration**
    - Starts the SSH agent
@@ -57,10 +57,10 @@ chmod +x git_setup.sh
 
 ### Email Address
 
-The script uses a placeholder email address (`your_email@example.com`) for SSH key generation. For production use, modify this to use a real email address:
+The script requires the user's Git name and email at runtime instead of using a hardcoded placeholder:
 
 ```bash
-ssh-keygen -t rsa -b 4096 -C "your_real_email@example.com" -f ~/.ssh/id_rsa -N ""
+./git_setup.sh "Your Name" "you@example.com"
 ```
 
 ## GitHub Setup Process
@@ -97,8 +97,8 @@ If you encounter permission issues:
 - Verify sudo privileges
 - Check SSH key file permissions:
   ```bash
-  chmod 600 ~/.ssh/id_rsa
-  chmod 644 ~/.ssh/id_rsa.pub
+  chmod 600 ~/.ssh/id_ed25519
+  chmod 644 ~/.ssh/id_ed25519.pub
   ```
 
 ### Git Not Found
@@ -115,7 +115,6 @@ If Git installation fails:
 ## Customization
 
 The script can be customized by modifying:
-- Email address for SSH key generation
 - SSH key type and bit length
 - GitHub test command
 - Server administration instructions

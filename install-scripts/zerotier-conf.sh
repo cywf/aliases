@@ -1,4 +1,5 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
 # ZeroTier IPv4 NAT Router Configuration Script
 # Includes option to allow outgoing traffic for common ports
@@ -20,13 +21,13 @@ fi
 echo -e "${GREEN}Checking and installing required tools...${NC}"
 REQUIRED_TOOLS=("curl" "iptables" "iptables-persistent" "zerotier-cli")
 for tool in "${REQUIRED_TOOLS[@]}"; do
-  if ! command -v $tool &> /dev/null; then
+  if ! command -v "$tool" &> /dev/null; then
     echo -e "${RED}Tool $tool is not installed. Installing...${NC}"
     if [[ "$tool" == "zerotier-cli" ]]; then
-      curl -s https://install.zerotier.com | bash
+      "$(dirname "$0")/zerotier-install.sh"
     else
       apt-get update
-      apt-get install -y $tool || yum install -y $tool
+      apt-get install -y "$tool" || yum install -y "$tool"
     fi
   else
     echo -e "${GREEN}$tool is already installed.${NC}"
@@ -75,10 +76,10 @@ echo -e "${GREEN}Configuring iptables rules...${NC}"
 iptables -F
 iptables -t nat -F
 iptables -X
-iptables -t nat -A POSTROUTING -o eth0 -s $ZT_NETWORK_IP -j SNAT --to-source $ZT_GATEWAY_IP
-iptables -A FORWARD -i $ZT_INTERFACE -s $ZT_NETWORK_IP -d 0.0.0.0/0 -j ACCEPT
-iptables -A FORWARD -i eth0 -s 0.0.0.0/0 -d $ZT_NETWORK_IP -j ACCEPT
-iptables -A INPUT -i $ZT_INTERFACE -s $ZT_NETWORK_IP -j ACCEPT
+iptables -t nat -A POSTROUTING -o eth0 -s "$ZT_NETWORK_IP" -j SNAT --to-source "$ZT_GATEWAY_IP"
+iptables -A FORWARD -i "$ZT_INTERFACE" -s "$ZT_NETWORK_IP" -d 0.0.0.0/0 -j ACCEPT
+iptables -A FORWARD -i eth0 -s 0.0.0.0/0 -d "$ZT_NETWORK_IP" -j ACCEPT
+iptables -A INPUT -i "$ZT_INTERFACE" -s "$ZT_NETWORK_IP" -j ACCEPT
 iptables -A INPUT -i lo -j ACCEPT
 
 # Handle outgoing traffic for common ports
@@ -89,7 +90,7 @@ if [[ "$ALLOW_COMMON_PORTS" == "yes" ]]; then
   iptables -A OUTPUT -p udp --dport 53 -j ACCEPT # For DNS
 else
   echo -e "${RED}Blocking outgoing traffic except for essential services.${NC}"
-  iptables -A OUTPUT -o $ZT_INTERFACE -j DROP
+  iptables -A OUTPUT -o "$ZT_INTERFACE" -j DROP
 fi
 
 iptables -A INPUT -j DROP
@@ -101,8 +102,8 @@ ip6tables-save > /etc/iptables/rules.v6
 
 # Join ZeroTier network
 echo -e "${GREEN}Joining ZeroTier Network...${NC}"
-zerotier-cli join $ZT_NETWORK_ID
-zerotier-cli set $ZT_NETWORK_ID allowDefault=1
+zerotier-cli join "$ZT_NETWORK_ID"
+zerotier-cli set "$ZT_NETWORK_ID" allowDefault=1
 
 # Verify ZeroTier connection
 echo -e "${GREEN}Verifying ZeroTier connection...${NC}"

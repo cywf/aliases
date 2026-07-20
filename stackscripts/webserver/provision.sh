@@ -1,67 +1,102 @@
-#!/bin/bash
-set -euo pipefail
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# Linode Access Token
-LINODE_ACCESS_TOKEN="your-linode-access-token"
+log() { printf '[INFO] %s\n' "$*"; }
+fatal() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
-# Create a new Linode Instance
-INSTANCE_TYPE="g6-nanode-1"
-REGION="us-west"
-INSTANCE_LABEL="label-example"
-INSTANCE_IMAGE="linode/ubuntu20.04"
-INSTANCE_ROOT_PASS="your-instance-root-password"
-INSTANCE_SSH_KEY="your-ssh-public-key"
-INSTANCE_VOLUMES="none"
+require_env() {
+    local name="$1"
+    if [ -z "${!name:-}" ]; then
+        fatal "Missing required environment variable: $name"
+    fi
+}
+
+require_env LINODE_ACCESS_TOKEN
+require_env INSTANCE_ROOT_PASS
+require_env INSTANCE_SSH_KEY
+
+INSTANCE_TYPE="${INSTANCE_TYPE:-g6-nanode-1}"
+REGION="${REGION:-us-west}"
+INSTANCE_LABEL="${INSTANCE_LABEL:-aliases-webserver}"
+INSTANCE_IMAGE="${INSTANCE_IMAGE:-linode/ubuntu22.04}"
 LINODE_API_URL="https://api.linode.com/v4/linode/instances"
+export INSTANCE_TYPE REGION INSTANCE_LABEL INSTANCE_IMAGE INSTANCE_ROOT_PASS INSTANCE_SSH_KEY
 
-response=$(curl -s -w "%{http_code}" -H "Content-Type: application/json" \
-    -H "Authorization: Bearer $LINODE_ACCESS_TOKEN" \
-    -d '{"region": "'"$REGION"'","type": "'"$INSTANCE_TYPE"'","image": "'"$INSTANCE_IMAGE"'","root_pass": "'"$INSTANCE_ROOT_PASS"'","label": "'"$INSTANCE_LABEL"'","ssh_keys": ["'"$INSTANCE_SSH_KEY"'"],"authorized_users": ["root"],"backups_enabled": false,"booleans": {"private_ip": true},"volumes": ["'"$INSTANCE_VOLUMES"'"]}' \
+payload=$(python3 - <<'PY'
+import json, os
+print(json.dumps({
+    "region": os.environ.get("REGION", "us-west"),
+    "type": os.environ.get("INSTANCE_TYPE", "g6-nanode-1"),
+    "image": os.environ.get("INSTANCE_IMAGE", "linode/ubuntu22.04"),
+    "root_pass": os.environ["INSTANCE_ROOT_PASS"],
+    "label": os.environ.get("INSTANCE_LABEL", "aliases-webserver"),
+    "ssh_keys": [os.environ["INSTANCE_SSH_KEY"]],
+    "backups_enabled": False,
+    "private_ip": True,
+}))
+PY
+)
+
+log "Creating Linode instance ${INSTANCE_LABEL} in ${REGION}..."
+response=$(curl -fsS \
+    -H "Content-Type: application/json" \
+    -H "Authorization: Bearer ${LINODE_ACCESS_TOKEN}" \
+    -d "$payload" \
     -X POST \
-    $LINODE_API_URL)
+    "$LINODE_API_URL")
 
-http_code="${response: -3}"
-if [[ "$http_code" -lt 200 || "$http_code" -gt 299 ]]; then
-    echo "Error: Failed to create Linode instance (HTTP $http_code)"
-    echo "Response: ${response%???}"
-    exit 1
-fi
+INSTANCE_ID=$(printf '%s' "$response" | python3 -c '
+import json, sys
+print(json.load(sys.stdin)["id"])
+')
+log "Created Linode instance id: $INSTANCE_ID"
 
-# Wait for Linode Instance to be provisioned
-sleep 30
+log "Waiting for instance networking information..."
+for _ in $(seq 1 30); do
+    instance=$(curl -fsS -H "Authorization: Bearer ${LINODE_ACCESS_TOKEN}" "$LINODE_API_URL/$INSTANCE_ID")
+    INSTANCE_IP=$(printf '%s' "$instance" | python3 -c '
+import json, sys
+ips=json.load(sys.stdin).get("ipv4", [])
+print(ips[0] if ips else "")
+')
+    if [ -n "$INSTANCE_IP" ]; then
+        break
+    fi
+    sleep 10
+done
+[ -n "${INSTANCE_IP:-}" ] || fatal "Instance did not report an IPv4 address."
+log "Instance IP: $INSTANCE_IP"
 
-# SSH into the instance
-ssh "root@${INSTANCE_IP:?Set INSTANCE_IP before running this script}"
+remote_script=$(cat <<'REMOTE'
+set -Eeuo pipefail
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get upgrade -y
+apt-get install -y curl gnupg ca-certificates software-properties-common apt-transport-https
 
-# Update the system and install necessary dependencies
-apt update
-apt upgrade -y
-apt install -y curl gnupg2 apt-transport-https ca-certificates software-properties-common
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+chmod a+r /etc/apt/keyrings/docker.gpg
+. /etc/os-release
+arch="$(dpkg --print-architecture)"
+cat > /etc/apt/sources.list.d/docker.list <<EOF
+deb [arch=${arch} signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu ${VERSION_CODENAME} stable
+EOF
 
-# Install Docker
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable"
-apt update
-apt install -y docker-ce docker-ce-cli containerd.io
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.30/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+cat > /etc/apt/sources.list.d/kubernetes.list <<EOF
+deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.30/deb/ /
+EOF
 
-# Install Kubernetes
-curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
-echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list
-apt update
-apt install -y kubelet kubeadm kubectl
+apt-get update
+apt-get install -y docker-ce docker-ce-cli containerd.io kubelet kubeadm kubectl nginx
+systemctl enable --now docker
 systemctl enable kubelet
+systemctl enable --now nginx
+REMOTE
+)
 
-# Install nginx
-apt install -y nginx
+log "Running remote provisioning over SSH..."
+ssh -o StrictHostKeyChecking=accept-new "root@${INSTANCE_IP}" "bash -s" <<<"$remote_script"
 
-# Install cert-manager
-kubectl apply -f https://github.com/jetstack/cert-manager/releases/download/v1.5.3/cert-manager.yaml
-
-# Install external-dns
-kubectl apply -f https://github.com/kubernetes-sigs/external-dns/releases/download/v0.8.0/external-dns.yaml
-
-# Install Portainer
-kubectl apply -f https://raw.githubusercontent.com/portainer/k8s/master/deploy/manifests/portainer/portainer.yaml
-
-# Exit the SSH session
-exit
+log "Provisioning complete for ${INSTANCE_IP}."

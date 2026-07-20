@@ -41,10 +41,21 @@ detect_os() {
 install_tailscale() {
   if [[ $OS == "linux" ]]; then
     echo "Installing Tailscale on Linux via apt..."
+    . /etc/os-release
+    DISTRO="${ID:-ubuntu}"
+    CODENAME="${VERSION_CODENAME:-}"
+    if [[ -z "$CODENAME" ]]; then
+      echo "Unable to detect OS codename from /etc/os-release."
+      exit 1
+    fi
+
     rm -f /etc/apt/sources.list.d/tailscale.list
-    apt-key list | grep -q "Tailscale" && apt-key del "$(apt-key list | awk '/Tailscale/{key=$2; gsub(/.*\//,"",key); print key}')"
-    curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/focal.gpg | apt-key add -
-    curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/focal.list | tee /etc/apt/sources.list.d/tailscale.list
+    install -m 0755 -d /usr/share/keyrings
+    curl -fsSL "https://pkgs.tailscale.com/stable/${DISTRO}/${CODENAME}.gpg" \
+      | gpg --dearmor -o /usr/share/keyrings/tailscale-archive-keyring.gpg
+    chmod 0644 /usr/share/keyrings/tailscale-archive-keyring.gpg
+    printf 'deb [signed-by=/usr/share/keyrings/tailscale-archive-keyring.gpg] https://pkgs.tailscale.com/stable/%s %s main\n' \
+      "$DISTRO" "$CODENAME" > /etc/apt/sources.list.d/tailscale.list
     apt-get update
     apt-get install -y tailscale
     systemctl enable tailscaled
@@ -53,8 +64,8 @@ install_tailscale() {
   elif [[ $OS == "macos" ]]; then
     echo "Installing Tailscale on macOS via Homebrew..."
     if ! command -v brew &>/dev/null; then
-      echo "Homebrew not found. Installing Homebrew first..."
-      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      echo "Homebrew not found. Install Homebrew first from https://brew.sh, then rerun this script."
+      exit 1
     fi
     brew install --cask tailscale
     sudo tailscale up
@@ -72,7 +83,7 @@ uninstall_tailscale() {
     apt-get autoremove -y
     rm -rf /var/lib/tailscale* /etc/default/tailscaled /etc/systemd/system/tailscaled.service.d
     rm -f /etc/apt/sources.list.d/tailscale.list
-    apt-key list | grep -q "Tailscale" && apt-key del "$(apt-key list | awk '/Tailscale/{key=$2; gsub(/.*\//,"",key); print key}')"
+    rm -f /usr/share/keyrings/tailscale-archive-keyring.gpg
     apt-get update
 
   elif [[ $OS == "macos" ]]; then

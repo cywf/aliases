@@ -32,10 +32,11 @@ resource "aws_instance" "dev_server" {
               sudo yum update -y
               sudo amazon-linux-extras install -y epel
               sudo yum install -y wget curl git unzip jq
-              curl -fsSL https://code-server.dev/install.sh | sh
+              # Review https://github.com/coder/code-server/releases and install a pinned package version here.
+              # Avoid piping remote installers directly into a shell on production hosts.
               systemctl --user enable --now code-server
               sudo systemctl enable --now code-server@$USER
-              echo "export PASSWORD=my_password" | sudo tee -a /etc/profile.d/code-server.sh
+              echo "Set CODE_SERVER_PASSWORD from a secret manager or encrypted user-data source." | sudo tee /etc/motd
               EOF
 }
 
@@ -94,7 +95,14 @@ output "public_ip" {
 
 ```bash
 ssh -i ~/.ssh/id_rsa ec2-user@<instance-public-ip>
-curl -s https://install.zerotier.com | sudo bash
+sudo apt-get update
+sudo apt-get install -y curl gpg ca-certificates
+curl -fsSL https://raw.githubusercontent.com/zerotier/ZeroTierOne/master/doc/contact%40zerotier.com.gpg \
+  | sudo gpg --dearmor -o /usr/share/keyrings/zerotier-archive-keyring.gpg
+echo 'deb [signed-by=/usr/share/keyrings/zerotier-archive-keyring.gpg] https://download.zerotier.com/debian/bookworm bookworm main' \
+  | sudo tee /etc/apt/sources.list.d/zerotier.list
+sudo apt-get update
+sudo apt-get install -y zerotier-one
 sudo systemctl enable --now zerotier-one
 sudo zerotier-cli join <network-id>
 ```

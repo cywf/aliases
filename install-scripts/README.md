@@ -109,13 +109,14 @@ chmod +x helm-install.sh
 
 ### zerotier-install.sh
 
-Installs ZeroTier VPN client.
+Installs the ZeroTier VPN client on Ubuntu/Debian systems using the upstream ZeroTier installer.
 
 **Requirements:**
 
 - Ubuntu/Debian-based system
 - Internet connectivity
 - sudo privileges
+- Review of the upstream installer before execution if used on sensitive hosts
 
 **Usage:**
 
@@ -123,6 +124,18 @@ Installs ZeroTier VPN client.
 chmod +x zerotier-install.sh
 ./zerotier-install.sh
 ```
+
+**Security notes:**
+
+- The script delegates to ZeroTier's official install endpoint.
+- Run it only from a trusted network and review the script before production use:
+
+```bash
+curl -fsSL https://install.zerotier.com | less
+```
+
+- Join networks explicitly after installation with `zerotier-cli join <network-id>`.
+
 
 ### zerotier-conf.sh
 
