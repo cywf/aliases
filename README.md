@@ -313,38 +313,21 @@ python3 sysadmin/c-mgmt.py
 
 ### Penetration Testing Setup
 
-```bash
-# Set up HTB tools for penetration testing
-cd htb
-python3 main.py
+HTB tools moved to their dedicated repository: <https://github.com/cywf/htb-helper>.
 
-# Follow the prompts to configure for a specific machine
-# Enter machine handle, name, IP, and type
-# The tool will automatically:
-# - Create directory structure
-# - Install necessary tools
-# - Perform Nmap scans
-# - Generate payloads
-```
+See [`htb/README.md`](htb/README.md) for the migration pointer and follow the canonical repo's current README for setup and usage.
 
 ### TAK Environment Setup
 
 ```bash
-# Set up TAK environment with monitoring
-cd tak
-chmod +x setup_tak.sh
-./setup_tak.sh
+# TAK setup moved to its dedicated repository.
+git clone https://github.com/cywf/otg-tak.git
+cd otg-tak
 
-# The script will:
-# - Check for dependencies
-# - Install missing tools
-# - Start Docker service
-# - Launch tmux session with monitoring tools
-
-# For advanced TAK configuration
-python3 tak_setup.py
-# Follow the interactive wizard for detailed setup
+# Follow that repository's README/INSTALL.md for deployment options.
 ```
+
+See [`tak/README.md`](tak/README.md) for the migration pointer.
 
 ### Cloud Infrastructure Setup
 
