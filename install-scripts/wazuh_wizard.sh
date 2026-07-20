@@ -520,7 +520,10 @@ start_wazuh_services() {
     fi
 
     # Navigate to the installation directory
-    cd "$install_dir"
+    cd "$install_dir" || {
+        print_status "Failed to enter $install_dir." "ERROR"
+        return 1
+    }
 
     # Start the Docker containers using Docker Compose
     retry_command docker-compose up -d
@@ -602,9 +605,12 @@ cleanup_on_error() {
 
     # Stop Docker containers if they are running
     if [ -f "$install_dir/docker-compose.yml" ]; then
-        cd "$install_dir"
-        docker-compose down
-        print_status "Stopped Docker containers." "INFO"
+        if cd "$install_dir"; then
+            docker-compose down
+            print_status "Stopped Docker containers." "INFO"
+        else
+            print_status "Failed to enter $install_dir during cleanup." "ERROR"
+        fi
     fi
 
     # Remove temporary files or directories if needed
