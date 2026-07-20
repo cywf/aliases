@@ -4,20 +4,27 @@ set -Eeuo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
+tracked_files() {
+  git ls-files "$@"
+}
+
 printf '[validate] shell syntax\n'
 while IFS= read -r script; do
+  [ -n "$script" ] || continue
   bash -n "$script"
-done < <(find . -type f -name '*.sh' -not -path './.git/*' | sort)
+done < <(tracked_files '*.sh' | sort)
 
 printf '[validate] python syntax\n'
 python3 - <<'PY'
-from pathlib import Path
 import py_compile
+import subprocess
 
-for path in sorted(Path('.').rglob('*.py')):
-    if '.git' in path.parts:
-        continue
-    py_compile.compile(str(path), doraise=True)
+files = subprocess.check_output(
+    ["git", "ls-files", "*.py"],
+    text=True,
+).splitlines()
+for path in sorted(files):
+    py_compile.compile(path, doraise=True)
 PY
 
 printf '[validate] done\n'
