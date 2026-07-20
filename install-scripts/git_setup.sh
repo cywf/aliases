@@ -1,59 +1,69 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
 
-# -------------------------- #
-# Cywf's Github Setup Script #
-#                            #
-#      W.I.P...              #
-# -------------------------- #
+log() { printf '[INFO] %s\n' "$*"; }
+fatal() { printf '[ERROR] %s\n' "$*" >&2; exit 1; }
 
-# Update system package manager
-echo "Updating system package manager..."
-sudo apt-get update -y
+usage() {
+    cat <<'USAGE'
+Usage: ./git_setup.sh "Your Name" "you@example.com"
 
-# Install Git (if not already installed)
-if ! command -v git &> /dev/null; then
-    echo "Git not found. Installing Git..."
-    sudo apt-get install git -y
-else
-    echo "Git is already installed."
+Configures Git identity and creates an SSH key for GitHub if one does not
+already exist. The email address is required so the key comment is traceable to
+the user instead of a hardcoded placeholder.
+USAGE
+}
+
+GIT_NAME="${1:-}"
+GIT_EMAIL="${2:-}"
+
+if [ -z "$GIT_NAME" ] || [ -z "$GIT_EMAIL" ]; then
+    usage
+    fatal "Git name and email are required."
 fi
 
-# Setup SSH configuration for GitHub
-echo "Setting up SSH configuration for GitHub..."
-if [ ! -f ~/.ssh/id_rsa ]; then
-    ssh-keygen -t rsa -b 4096 -C "your_email@example.com" -f ~/.ssh/id_rsa -N ""
-    echo "SSH key generated."
-else
-    echo "SSH key already exists."
+if ! [[ "$GIT_EMAIL" =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]]; then
+    fatal "Invalid email address: $GIT_EMAIL"
 fi
 
-# Add SSH key to the ssh-agent
-eval "$(ssh-agent -s)"
-ssh-add ~/.ssh/id_rsa
+if command -v apt-get >/dev/null 2>&1 && ! command -v git >/dev/null 2>&1; then
+    log "Git not found. Installing Git with apt-get..."
+    sudo apt-get update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y git openssh-client
+elif ! command -v git >/dev/null 2>&1; then
+    fatal "Git is not installed. Install git with your package manager, then rerun this script."
+fi
 
-# Print SSH public key and instructions
-echo "Copy the following SSH key to your GitHub account:"
-cat ~/.ssh/id_rsa.pub
-echo ""
-echo "Instructions to add SSH key to GitHub:"
-echo "1. Log in to your GitHub account."
-echo "2. Go to 'Settings' by clicking on your profile picture in the top right corner."
-echo "3. In the left sidebar, click on 'SSH and GPG keys'."
-echo "4. Click on the 'New SSH key' button."
-echo "5. In the 'Title' field, add a descriptive label for the new key (e.g., 'My Server Key')."
-echo "6. Paste the copied SSH key into the 'Key' field."
-echo "7. Click 'Add SSH key' to save."
-echo ""
-echo "Additional instructions for server administrators:"
-echo "1. Ensure that the server has outbound internet access to connect to GitHub."
-echo "2. If the server is behind a firewall, ensure that SSH traffic is allowed."
-echo "3. Consider setting up a secure method to transfer the SSH public key from the server to your local machine if needed."
-echo "4. Verify that the server's time is synchronized, as time discrepancies can cause SSH issues."
-echo "5. Regularly update the server's packages and security patches to maintain security."
+log "Configuring Git identity..."
+git config --global user.name "$GIT_NAME"
+git config --global user.email "$GIT_EMAIL"
 
-# Conduct SSH test
-echo "Testing SSH connection to GitHub..."
-ssh -T git@github.com
+mkdir -p "$HOME/.ssh"
+chmod 700 "$HOME/.ssh"
 
-# Print success message
-echo "GitHub setup is complete. You can now use Git with SSH on GitHub."
+KEY_PATH="$HOME/.ssh/id_ed25519"
+if [ ! -f "$KEY_PATH" ]; then
+    log "Generating ed25519 SSH key for GitHub..."
+    ssh-keygen -t ed25519 -C "$GIT_EMAIL" -f "$KEY_PATH" -N ""
+else
+    log "SSH key already exists at $KEY_PATH."
+fi
+
+if command -v ssh-agent >/dev/null 2>&1; then
+    eval "$(ssh-agent -s)" >/dev/null
+    ssh-add "$KEY_PATH" || true
+fi
+
+log "Copy the following SSH public key to GitHub:"
+printf '\n'
+cat "${KEY_PATH}.pub"
+printf '\n\n'
+cat <<'NEXT_STEPS'
+GitHub SSH key steps:
+1. Open GitHub → Settings → SSH and GPG keys.
+2. Click "New SSH key".
+3. Paste the public key above.
+4. Test with: ssh -T git@github.com
+NEXT_STEPS
+
+log "GitHub setup is complete."
