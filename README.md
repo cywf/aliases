@@ -458,6 +458,14 @@ If you encounter issues not covered in this documentation:
 
 ## Contributing
 
+Before opening a pull request, run the non-destructive validation baseline:
+
+```bash
+bash scripts/validate.sh
+```
+
+See [`TESTING.md`](TESTING.md) for CI and manual testing expectations.
+
 Contributions are welcome! Please feel free to submit a Pull Request. When contributing:
 
 1. Fork the repository
