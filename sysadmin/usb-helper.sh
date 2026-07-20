@@ -141,6 +141,22 @@ function list_usb_devices {
         awk '$4 == "disk" && ($2 == "usb" || $3 == "1") {print}'
 }
 
+function normalize_device_path {
+    local device="$1"
+    if [[ "$device" == /dev/* ]]; then
+        printf '%s\n' "$device"
+    else
+        printf '/dev/%s\n' "$device"
+    fi
+}
+
+function is_listed_removable_device {
+    local device_path="$1"
+    lsblk -dpno NAME,TRAN,RM,TYPE | \
+        awk '$4 == "disk" && ($2 == "usb" || $3 == "1") {print $1}' | \
+        grep -Fxq -- "$device_path"
+}
+
 # Option 1: Extend current storage
 function extend_storage {
     save_checkpoint "extend_storage"
@@ -148,12 +164,16 @@ function extend_storage {
     list_usb_devices
 
     # Prompt the user to select a device
-    read -p "Enter the device name (e.g., sdb) to use as extended storage: " DEVICE
-    DEVICE_PATH="/dev/$DEVICE"
+    read -p "Enter one listed removable device path (e.g., /dev/sdb) to use as extended storage: " DEVICE
+    DEVICE_PATH="$(normalize_device_path "$DEVICE")"
 
     # Verify the selected device
     if [ ! -b "$DEVICE_PATH" ]; then
         echo "ERROR: Device $DEVICE_PATH does not exist. Exiting."
+        exit 1
+    fi
+    if ! is_listed_removable_device "$DEVICE_PATH"; then
+        echo "ERROR: $DEVICE_PATH was not in the removable-device list. Exiting."
         exit 1
     fi
 
@@ -199,11 +219,16 @@ function write_ubuntu_image {
         list_usb_devices
 
         # Prompt the user to select a device
-        read -p "Enter the device path (e.g., /dev/sdb or /dev/nvme0n1) to write the image to: " DEVICE_PATH
+        read -p "Enter one listed removable device path (e.g., /dev/sdb) to write the image to: " DEVICE
+        DEVICE_PATH="$(normalize_device_path "$DEVICE")"
 
         # Verify the selected device
         if [ ! -b "$DEVICE_PATH" ]; then
             echo "ERROR: Device $DEVICE_PATH does not exist."
+            continue
+        fi
+        if ! is_listed_removable_device "$DEVICE_PATH"; then
+            echo "ERROR: $DEVICE_PATH was not in the removable-device list."
             continue
         fi
 
