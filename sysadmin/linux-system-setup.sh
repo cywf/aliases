@@ -132,6 +132,7 @@ set_sshd_config_value() {
     tmp="$(mktemp)"
     awk -v key="$key" -v value="$value" '
         BEGIN { written=0 }
+        /^[[:space:]]*Match[[:space:]]/ && !written { print key " " value; written=1 }
         $1 == key || $1 == "#" key { if (!written) { print key " " value; written=1 } ; next }
         { print }
         END { if (!written) print key " " value }
@@ -144,10 +145,11 @@ set_sshd_config_value() {
 secure_ssh() {
     log "Securing SSH..."
     local ssh_config_file="/etc/ssh/sshd_config"
-    local service
+    local service backup_file
 
     [ -f "$ssh_config_file" ] || fatal "SSH config not found: $ssh_config_file"
-    cp "$ssh_config_file" "${ssh_config_file}.bak.$(date +%Y%m%d%H%M%S)"
+    backup_file="${ssh_config_file}.bak.$(date +%Y%m%d%H%M%S)"
+    cp "$ssh_config_file" "$backup_file"
 
     set_sshd_config_value Port "$SSH_PORT" "$ssh_config_file"
     set_sshd_config_value PermitRootLogin no "$ssh_config_file"
@@ -159,7 +161,10 @@ secure_ssh() {
         set_sshd_config_value PasswordAuthentication yes "$ssh_config_file"
     fi
 
-    sshd -t -f "$ssh_config_file" || fatal "sshd_config validation failed; backup retained beside $ssh_config_file."
+    if ! sshd -t -f "$ssh_config_file"; then
+        cp "$backup_file" "$ssh_config_file"
+        fatal "sshd_config validation failed; restored backup from $backup_file."
+    fi
     service="$(ssh_service_name)"
     systemctl restart "$service" || fatal "Failed to restart SSH service: $service"
 }
@@ -198,6 +203,8 @@ configure_firewall() {
 install_docker_official_repo() {
     log "Installing Docker from the official Docker apt repository..."
     install_packages_or_fail ca-certificates curl gnupg
+    apt-get remove -y docker.io docker-doc docker-compose podman-docker containerd runc || \
+        fatal "Failed to remove conflicting distro Docker packages before Docker CE install."
     install -m 0755 -d /etc/apt/keyrings
     local codename arch distro_id docker_distro
     codename="$(. /etc/os-release && printf '%s' "${VERSION_CODENAME:-}")"
