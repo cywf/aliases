@@ -124,6 +124,7 @@ alias zerotier-cli="sudo zerotier-cli"                # ZeroTier CLI (full comma
 # Portable Hermes USB launcher. Plug in the Samsung BAR Plus drive, then run:
 #   sentinel
 #   hermes-usb
+#   sentinel-off    stop gateway, sync cleanup, and unmount the USB
 # Optional: export ALIASES_REPO=/path/to/aliases if this repo lives somewhere custom.
 hermes-portable-usb() {
   local script=""
@@ -153,6 +154,7 @@ hermes-portable-usb() {
 alias hermesusb="hermes-portable-usb"
 alias hermes-usb="hermes-portable-usb"
 alias sentinel="hermes-portable-usb"
+alias sentinel-off="hermes-portable-usb --off"
 
 # Explicit automode launcher. Set AUTOMODE_CMD to the local autonomous-agent
 # command you trust, then run: automode [args...]
