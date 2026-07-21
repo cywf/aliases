@@ -12,6 +12,7 @@ Feel free to fork or create a PR to contribute!
 - [Networking](#networking)
 - [System Administration](#system-administration)
 - [Development Tools](#development-tools)
+- [Operational Standards](#operational-standards)
 - [Hack The Box (HTB)](#hack-the-box-htb)
 - [TAK (Team Awareness Kit)](#tak-team-awareness-kit)
 - [StackScripts](#stackscripts)
@@ -33,6 +34,7 @@ The toolkit is organized into several directories, each focusing on a specific d
 - **Networking**: Configuration examples and documentation
 - **System Administration**: Tools for system management
 - **Development Tools**: Resources for development environments
+- **Operational Standards**: Script safety, dependency, platform, and testing guidance
 - **HTB**: Pointer to the canonical HTB toolkit repository
 - **TAK**: Pointer to the canonical TAK toolkit repository
 - **StackScripts**: Linode automation scripts
@@ -187,6 +189,13 @@ The `dev/` directory contains development-related resources:
 
 - **terraform/** - Terraform configurations for infrastructure
   - **dev-server.md** - Development server setup guide
+
+## Operational Standards
+
+Use these documents before adding or changing operational scripts:
+
+- [`docs/script-standards.md`](docs/script-standards.md) - shell/Python safety, error handling, remote installer, and rollback guidance
+- [`docs/dependencies.md`](docs/dependencies.md) - dependency, package-manager, platform, and validation matrix
 
 ## Hack The Box (HTB)
 

@@ -5,6 +5,7 @@ This index provides links to all documentation files in the repository, organize
 ## Table of Contents
 
 - [Main Documentation](#main-documentation)
+- [Operational Standards](#operational-standards)
 - [Installation Scripts](#installation-scripts)
 - [System Administration](#system-administration)
 - [Networking](#networking)
@@ -18,6 +19,11 @@ This index provides links to all documentation files in the repository, organize
 
 - [README.md](README.md) - Main repository documentation
 - [LICENSE](LICENSE) - License information
+
+## Operational Standards
+
+- [docs/script-standards.md](docs/script-standards.md) - Shell/Python script safety, error-handling, package-manager, and remote-installer standards
+- [docs/dependencies.md](docs/dependencies.md) - Dependency, platform, package-manager, and testing matrix
 
 ## Installation Scripts
 
