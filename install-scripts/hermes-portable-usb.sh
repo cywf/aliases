@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-VERSION="3.5.0"
+VERSION="3.5.1"
 PORTABLE_REPO_URL="${HERMES_PORTABLE_REPO_URL:-https://github.com/techjarves/Local-Hermes-Portable.git}"
 PORTABLE_ARCHIVE_URL="${HERMES_PORTABLE_ARCHIVE_URL:-https://github.com/techjarves/Local-Hermes-Portable/archive/refs/heads/main.tar.gz}"
 PORTABLE_DIR_NAME="${HERMES_PORTABLE_DIR_NAME:-Local-Hermes-Portable}"
@@ -61,6 +61,8 @@ Environment:
   HERMES_USB_TELEGRAM_CHAT_ID  / TELEGRAM_CHAT_ID
   HERMES_USB_NOTIFY=0         Disable Telegram notification.
   HERMES_USB_UNMOUNT=0        For --off, stop gateway/cleanup but skip unmount.
+  HERMES_USB_ALLOW_NON_REMOVABLE_UNMOUNT=1
+                              Override removable-media safety check for --off.
 
 Telegram credentials may also live on the USB in one of:
   .telegram.env, telegram.env, hermes/.env
@@ -639,6 +641,62 @@ block_device_for_path() {
   return 1
 }
 
+linux_device_is_removable() {
+  local device="$1" block parent rm tran removable_path
+  [ -n "$device" ] || return 1
+  block="$(basename "$device")"
+
+  if command -v lsblk >/dev/null 2>&1; then
+    rm="$(lsblk -no RM "$device" 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+    tran="$(lsblk -no TRAN "$device" 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+    [ "$rm" = "1" ] && return 0
+    [ "$tran" = "usb" ] && return 0
+
+    parent="$(lsblk -no PKNAME "$device" 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+    if [ -n "$parent" ]; then
+      rm="$(lsblk -no RM "/dev/$parent" 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+      tran="$(lsblk -no TRAN "/dev/$parent" 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+      [ "$rm" = "1" ] && return 0
+      [ "$tran" = "usb" ] && return 0
+      removable_path="/sys/block/$parent/removable"
+      [ -f "$removable_path" ] && [ "$(cat "$removable_path" 2>/dev/null)" = "1" ] && return 0
+    fi
+  fi
+
+  # Sysfs fallback: partitions are symlinks under /sys/class/block/<part>.
+  if [ -e "/sys/class/block/$block" ]; then
+    parent="$(basename "$(readlink -f "/sys/class/block/$block/.." 2>/dev/null)" 2>/dev/null || true)"
+    for removable_path in "/sys/class/block/$block/removable" "/sys/block/$block/removable" "/sys/block/$parent/removable"; do
+      [ -f "$removable_path" ] && [ "$(cat "$removable_path" 2>/dev/null)" = "1" ] && return 0
+    done
+  fi
+
+  return 1
+}
+
+mountpoint_is_safe_to_unmount() {
+  local root="$1" mountpoint="$2" device disk_info
+
+  [ "${HERMES_USB_ALLOW_NON_REMOVABLE_UNMOUNT:-0}" = "1" ] && return 0
+  [ "$mountpoint" = "/" ] && return 1
+
+  case "$(uname -s 2>/dev/null || printf unknown)" in
+    Darwin*)
+      command -v diskutil >/dev/null 2>&1 || return 1
+      disk_info="$(diskutil info "$mountpoint" 2>/dev/null || true)"
+      printf '%s\n' "$disk_info" | grep -Eq 'Removable Media:[[:space:]]+Removable|External:[[:space:]]+Yes'
+      ;;
+    Linux*)
+      device="$(block_device_for_path "$root" || true)"
+      [ -n "$device" ] || return 1
+      linux_device_is_removable "$device"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 run_gateway_stop_command() {
   local root="$1" launch="$2" status=1
 
@@ -664,11 +722,15 @@ run_gateway_stop_command() {
 }
 
 terminate_portable_gateway_processes() {
-  local root="$1" pids="" pid
+  local root="$1" pids="" pid self="$$"
   # Only target processes that look like gateway processes and whose command line
   # includes this portable root. This avoids stopping unrelated Hermes sessions.
-  pids="$(ps -axo pid=,command= 2>/dev/null | awk -v root="$root" '
-    $0 ~ root && $0 ~ /hermes/ && $0 ~ /gateway/ {print $1}
+  # Exclude this script, ps, awk, and shell wrapper processes so the matcher does
+  # not count itself as evidence that a gateway existed.
+  pids="$(ps -axo pid=,comm=,args= 2>/dev/null | awk -v root="$root" -v self="$self" '
+    $1 == self {next}
+    $2 ~ /^(awk|gawk|mawk|ps|bash|sh|zsh)$/ {next}
+    index($0, root) && $0 ~ /hermes/ && $0 ~ /gateway/ {print $1}
   ' | sort -u)"
 
   [ -n "$pids" ] || return 1
@@ -702,8 +764,8 @@ sentinel_off() {
   fi
 
   mountpoint="$(mountpoint_for_path "$root")" || fail "Could not determine mountpoint for $root"
-  if [ "$mountpoint" = "/" ]; then
-    fail "Refusing to unmount /; detected root path is not on removable media: $root"
+  if ! mountpoint_is_safe_to_unmount "$root" "$mountpoint"; then
+    fail "Refusing to unmount non-removable or unverifiable mountpoint: $mountpoint. Set HERMES_USB_ALLOW_NON_REMOVABLE_UNMOUNT=1 only if you have verified this is the intended USB device."
   fi
 
   log "${BLUE}[info]${NC} USB mountpoint: $mountpoint"
