@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-VERSION="3.4.0"
+VERSION="3.5.1"
 PORTABLE_REPO_URL="${HERMES_PORTABLE_REPO_URL:-https://github.com/techjarves/Local-Hermes-Portable.git}"
 PORTABLE_ARCHIVE_URL="${HERMES_PORTABLE_ARCHIVE_URL:-https://github.com/techjarves/Local-Hermes-Portable/archive/refs/heads/main.tar.gz}"
 PORTABLE_DIR_NAME="${HERMES_PORTABLE_DIR_NAME:-Local-Hermes-Portable}"
@@ -35,6 +35,7 @@ runtime setup inside the portable folder.
 Options:
   --find-only                 Print detected Local-Hermes-Portable root and exit.
   --verify-only               Locate/bootstrap and verify, but do not launch Hermes.
+  --off                       Stop Hermes gateway, sync cleanup, and unmount the USB.
   --launcher                  Run platform launcher linux.sh/mac.sh instead of hermes/launch.sh.
   --root PATH                 Use known Local-Hermes-Portable root, or a USB mount root
                               where Local-Hermes-Portable should be installed.
@@ -47,6 +48,7 @@ Options:
 Aliases expected in bash_aliases:
   sentinel
   hermes-usb
+  sentinel-off
   hermesusb       legacy compatibility
 
 Environment:
@@ -58,6 +60,9 @@ Environment:
   HERMES_USB_TELEGRAM_BOT_TOKEN / TELEGRAM_BOT_TOKEN
   HERMES_USB_TELEGRAM_CHAT_ID  / TELEGRAM_CHAT_ID
   HERMES_USB_NOTIFY=0         Disable Telegram notification.
+  HERMES_USB_UNMOUNT=0        For --off, stop gateway/cleanup but skip unmount.
+  HERMES_USB_ALLOW_NON_REMOVABLE_UNMOUNT=1
+                              Override removable-media safety check for --off.
 
 Telegram credentials may also live on the USB in one of:
   .telegram.env, telegram.env, hermes/.env
@@ -614,8 +619,186 @@ send_telegram() {
   fi
 }
 
+mountpoint_for_path() {
+  local path="$1" mountpoint
+  if command -v findmnt >/dev/null 2>&1; then
+    mountpoint="$(findmnt -T "$path" -n -o TARGET 2>/dev/null | head -n 1 || true)"
+    [ -n "$mountpoint" ] && { printf '%s\n' "$mountpoint"; return 0; }
+  fi
+  mountpoint="$(df -P "$path" 2>/dev/null | awk 'NR==2 {print $6}')"
+  [ -n "$mountpoint" ] && { printf '%s\n' "$mountpoint"; return 0; }
+  return 1
+}
+
+block_device_for_path() {
+  local path="$1" source
+  if command -v findmnt >/dev/null 2>&1; then
+    source="$(findmnt -T "$path" -n -o SOURCE 2>/dev/null | head -n 1 || true)"
+    case "$source" in /dev/*) printf '%s\n' "$source"; return 0 ;; esac
+  fi
+  source="$(df -P "$path" 2>/dev/null | awk 'NR==2 {print $1}')"
+  case "$source" in /dev/*) printf '%s\n' "$source"; return 0 ;; esac
+  return 1
+}
+
+linux_device_is_removable() {
+  local device="$1" block parent rm tran removable_path
+  [ -n "$device" ] || return 1
+  block="$(basename "$device")"
+
+  if command -v lsblk >/dev/null 2>&1; then
+    rm="$(lsblk -no RM "$device" 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+    tran="$(lsblk -no TRAN "$device" 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+    [ "$rm" = "1" ] && return 0
+    [ "$tran" = "usb" ] && return 0
+
+    parent="$(lsblk -no PKNAME "$device" 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+    if [ -n "$parent" ]; then
+      rm="$(lsblk -no RM "/dev/$parent" 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+      tran="$(lsblk -no TRAN "/dev/$parent" 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+      [ "$rm" = "1" ] && return 0
+      [ "$tran" = "usb" ] && return 0
+      removable_path="/sys/block/$parent/removable"
+      [ -f "$removable_path" ] && [ "$(cat "$removable_path" 2>/dev/null)" = "1" ] && return 0
+    fi
+  fi
+
+  # Sysfs fallback: partitions are symlinks under /sys/class/block/<part>.
+  if [ -e "/sys/class/block/$block" ]; then
+    parent="$(basename "$(readlink -f "/sys/class/block/$block/.." 2>/dev/null)" 2>/dev/null || true)"
+    for removable_path in "/sys/class/block/$block/removable" "/sys/block/$block/removable" "/sys/block/$parent/removable"; do
+      [ -f "$removable_path" ] && [ "$(cat "$removable_path" 2>/dev/null)" = "1" ] && return 0
+    done
+  fi
+
+  return 1
+}
+
+mountpoint_is_safe_to_unmount() {
+  local root="$1" mountpoint="$2" device disk_info
+
+  [ "${HERMES_USB_ALLOW_NON_REMOVABLE_UNMOUNT:-0}" = "1" ] && return 0
+  [ "$mountpoint" = "/" ] && return 1
+
+  case "$(uname -s 2>/dev/null || printf unknown)" in
+    Darwin*)
+      command -v diskutil >/dev/null 2>&1 || return 1
+      disk_info="$(diskutil info "$mountpoint" 2>/dev/null || true)"
+      printf '%s\n' "$disk_info" | grep -Eq 'Removable Media:[[:space:]]+Removable|External:[[:space:]]+Yes'
+      ;;
+    Linux*)
+      device="$(block_device_for_path "$root" || true)"
+      [ -n "$device" ] || return 1
+      linux_device_is_removable "$device"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+run_gateway_stop_command() {
+  local root="$1" launch="$2" status=1
+
+  if [ -f "$launch" ]; then
+    log "${BLUE}[info]${NC} Asking portable Hermes gateway to stop via launch.sh."
+    if (cd "$root/hermes" && bash "$launch" gateway stop); then
+      status=0
+    else
+      warn "Portable gateway stop command returned non-zero; checking fallbacks."
+    fi
+  fi
+
+  if command -v hermes >/dev/null 2>&1; then
+    log "${BLUE}[info]${NC} Asking system Hermes gateway service to stop, if present."
+    hermes gateway stop >/dev/null 2>&1 && status=0 || true
+  fi
+
+  if command -v systemctl >/dev/null 2>&1; then
+    systemctl --user stop hermes-gateway >/dev/null 2>&1 && status=0 || true
+  fi
+
+  return "$status"
+}
+
+terminate_portable_gateway_processes() {
+  local root="$1" pids="" pid self="$$"
+  # Only target processes that look like gateway processes and whose command line
+  # includes this portable root. This avoids stopping unrelated Hermes sessions.
+  # Exclude this script, ps, awk, and shell wrapper processes so the matcher does
+  # not count itself as evidence that a gateway existed.
+  pids="$(ps -axo pid=,comm=,args= 2>/dev/null | awk -v root="$root" -v self="$self" '
+    $1 == self {next}
+    $2 ~ /^(awk|gawk|mawk|ps|bash|sh|zsh)$/ {next}
+    index($0, root) && $0 ~ /hermes/ && $0 ~ /gateway/ {print $1}
+  ' | sort -u)"
+
+  [ -n "$pids" ] || return 1
+  log "${BLUE}[info]${NC} Terminating portable gateway process(es): $pids"
+  for pid in $pids; do
+    kill "$pid" 2>/dev/null || true
+  done
+  sleep 2
+  for pid in $pids; do
+    if kill -0 "$pid" 2>/dev/null; then
+      warn "Gateway process $pid is still running after TERM; leaving it for safety."
+    fi
+  done
+  return 0
+}
+
+sentinel_off() {
+  local root="$1" launch="$2" mountpoint device unmount_ok=1
+
+  printf '%b\n' "${BOLD}${YELLOW}SENTINEL OFF${NC}"
+  log "${BLUE}[info]${NC} Portable root: $root"
+
+  run_gateway_stop_command "$root" "$launch" || terminate_portable_gateway_processes "$root" || warn "No matching portable Hermes gateway process/service was stopped."
+
+  log "${BLUE}[info]${NC} Syncing filesystem buffers before unmount."
+  sync || warn "sync returned non-zero."
+
+  if [ "${HERMES_USB_UNMOUNT:-1}" = "0" ]; then
+    log "${YELLOW}[warn]${NC} HERMES_USB_UNMOUNT=0; leaving USB mounted."
+    return 0
+  fi
+
+  mountpoint="$(mountpoint_for_path "$root")" || fail "Could not determine mountpoint for $root"
+  if ! mountpoint_is_safe_to_unmount "$root" "$mountpoint"; then
+    fail "Refusing to unmount non-removable or unverifiable mountpoint: $mountpoint. Set HERMES_USB_ALLOW_NON_REMOVABLE_UNMOUNT=1 only if you have verified this is the intended USB device."
+  fi
+
+  log "${BLUE}[info]${NC} USB mountpoint: $mountpoint"
+  cd "${HOME:-/}" || cd /
+
+  case "$(uname -s 2>/dev/null || printf unknown)" in
+    Darwin*)
+      diskutil unmount "$mountpoint" && unmount_ok=0 || true
+      ;;
+    Linux*)
+      device="$(block_device_for_path "$root" || true)"
+      if [ -n "$device" ] && command -v udisksctl >/dev/null 2>&1; then
+        udisksctl unmount -b "$device" && unmount_ok=0 || true
+      fi
+      [ "$unmount_ok" = "0" ] || umount "$mountpoint" && unmount_ok=0 || true
+      [ "$unmount_ok" = "0" ] || { command -v sudo >/dev/null 2>&1 && sudo umount "$mountpoint" && unmount_ok=0 || true; }
+      ;;
+    *)
+      umount "$mountpoint" && unmount_ok=0 || true
+      ;;
+  esac
+
+  if [ "$unmount_ok" = "0" ]; then
+    log "${GREEN}[ok]${NC} Gateway stopped, filesystem synced, and USB unmounted: $mountpoint"
+    return 0
+  fi
+
+  fail "USB unmount failed for $mountpoint. Close shells/files using the USB, then retry sentinel-off."
+}
+
 VERIFY_ONLY=0
 FIND_ONLY=0
+OFF_MODE=0
 USE_PLATFORM_LAUNCHER=0
 NO_TELEGRAM=0
 NO_BOOTSTRAP=0
@@ -627,6 +810,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --find-only) FIND_ONLY=1 ;;
     --verify-only) VERIFY_ONLY=1 ;;
+    --off|off|sentinel-off) OFF_MODE=1; NO_BOOTSTRAP=1; NO_TELEGRAM=1 ;;
     --launcher|--platform-launcher|--platform-setup) USE_PLATFORM_LAUNCHER=1 ;;
     --root) shift; ROOT_ARG="${1:-}" ;;
     --target) shift; HERMES_USB_TARGET="${1:-}" ;;
@@ -654,6 +838,11 @@ LAUNCHER="$(platform_launcher "$ROOT")" || fail "No linux.sh/mac.sh launcher fou
 HERMES_LAUNCH="$ROOT/hermes/launch.sh"
 [ -f "$HERMES_LAUNCH" ] || fail "Hermes launcher missing: $HERMES_LAUNCH"
 
+if [ "$OFF_MODE" = "1" ]; then
+  sentinel_off "$ROOT" "$HERMES_LAUNCH"
+  exit 0
+fi
+
 print_banner
 REPORT="$(health_report "$ROOT" "$LAUNCHER")"
 log "${BLUE}$REPORT${NC}"
@@ -666,10 +855,10 @@ fi
 
 if [ "$USE_PLATFORM_LAUNCHER" = "1" ]; then
   log "${GREEN}[ok]${NC} Starting platform launcher: $LAUNCHER"
-  cd "$ROOT" || die "Failed to enter portable root: $ROOT"
+  cd "$ROOT" || fail "Failed to enter portable root: $ROOT"
   exec bash "$LAUNCHER" "${EXTRA_ARGS[@]}"
 fi
 
 log "${GREEN}[ok]${NC} Starting portable Hermes: $HERMES_LAUNCH"
-cd "$ROOT/hermes" || die "Failed to enter Hermes directory: $ROOT/hermes"
+cd "$ROOT/hermes" || fail "Failed to enter Hermes directory: $ROOT/hermes"
 exec bash "$HERMES_LAUNCH" "${EXTRA_ARGS[@]}"
