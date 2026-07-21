@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 
 SCRIPT_NAME="$(basename "$0")"
-VERSION="3.5.1"
+VERSION="3.5.2"
 PORTABLE_REPO_URL="${HERMES_PORTABLE_REPO_URL:-https://github.com/techjarves/Local-Hermes-Portable.git}"
 PORTABLE_ARCHIVE_URL="${HERMES_PORTABLE_ARCHIVE_URL:-https://github.com/techjarves/Local-Hermes-Portable/archive/refs/heads/main.tar.gz}"
 PORTABLE_DIR_NAME="${HERMES_PORTABLE_DIR_NAME:-Local-Hermes-Portable}"
@@ -61,6 +61,7 @@ Environment:
   HERMES_USB_TELEGRAM_CHAT_ID  / TELEGRAM_CHAT_ID
   HERMES_USB_NOTIFY=0         Disable Telegram notification.
   HERMES_USB_UNMOUNT=0        For --off, stop gateway/cleanup but skip unmount.
+  HERMES_USB_POWEROFF=0       For --off, unmount but skip USB power-off/eject.
   HERMES_USB_ALLOW_NON_REMOVABLE_UNMOUNT=1
                               Override removable-media safety check for --off.
 
@@ -641,6 +642,60 @@ block_device_for_path() {
   return 1
 }
 
+parent_block_device() {
+  local device="$1" parent block
+  [ -n "$device" ] || return 1
+  if command -v lsblk >/dev/null 2>&1; then
+    parent="$(lsblk -no PKNAME "$device" 2>/dev/null | awk 'NF {print $1; exit}' || true)"
+    [ -n "$parent" ] && { printf '/dev/%s\n' "$parent"; return 0; }
+  fi
+  block="$(basename "$device")"
+  if [ -e "/sys/class/block/$block" ]; then
+    parent="$(basename "$(readlink -f "/sys/class/block/$block/.." 2>/dev/null)" 2>/dev/null || true)"
+    [ -n "$parent" ] && [ "$parent" != "block" ] && { printf '/dev/%s\n' "$parent"; return 0; }
+  fi
+  printf '%s\n' "$device"
+}
+
+verify_unmounted() {
+  local mountpoint="$1"
+  if command -v findmnt >/dev/null 2>&1; then
+    ! findmnt -M "$mountpoint" >/dev/null 2>&1
+    return $?
+  fi
+  if command -v mountpoint >/dev/null 2>&1; then
+    ! mountpoint -q "$mountpoint"
+    return $?
+  fi
+  ! awk -v mp="$mountpoint" '$2 == mp {found=1} END {exit found ? 0 : 1}' /proc/mounts 2>/dev/null
+}
+
+poweroff_or_eject_usb() {
+  local mountpoint="$1" device="$2" parent
+  [ "${HERMES_USB_POWEROFF:-1}" = "0" ] && { log "${YELLOW}[warn]${NC} HERMES_USB_POWEROFF=0; USB was unmounted but not powered off/ejected."; return 0; }
+
+  case "$(uname -s 2>/dev/null || printf unknown)" in
+    Darwin*)
+      command -v diskutil >/dev/null 2>&1 || { warn "diskutil not found; USB was unmounted but not ejected."; return 0; }
+      diskutil eject "$mountpoint" >/dev/null 2>&1 && { log "${GREEN}[ok]${NC} USB ejected by macOS."; return 0; }
+      warn "USB was unmounted, but diskutil eject did not complete. Wait for OS activity to stop before unplugging."
+      return 0
+      ;;
+    Linux*)
+      command -v udisksctl >/dev/null 2>&1 || { warn "udisksctl not found; USB was unmounted but not powered off."; return 0; }
+      parent="$(parent_block_device "$device" 2>/dev/null || printf '%s' "$device")"
+      udisksctl power-off -b "$parent" >/dev/null 2>&1 && { log "${GREEN}[ok]${NC} USB powered off: $parent"; return 0; }
+      [ "$parent" != "$device" ] && udisksctl power-off -b "$device" >/dev/null 2>&1 && { log "${GREEN}[ok]${NC} USB powered off: $device"; return 0; }
+      warn "USB was unmounted, but udisksctl power-off did not complete. Wait for OS activity to stop before unplugging."
+      return 0
+      ;;
+    *)
+      warn "USB was unmounted, but this OS has no configured eject/power-off command."
+      return 0
+      ;;
+  esac
+}
+
 linux_device_is_removable() {
   local device="$1" block parent rm tran removable_path
   [ -n "$device" ] || return 1
@@ -780,16 +835,22 @@ sentinel_off() {
       if [ -n "$device" ] && command -v udisksctl >/dev/null 2>&1; then
         udisksctl unmount -b "$device" && unmount_ok=0 || true
       fi
-      [ "$unmount_ok" = "0" ] || umount "$mountpoint" && unmount_ok=0 || true
-      [ "$unmount_ok" = "0" ] || { command -v sudo >/dev/null 2>&1 && sudo umount "$mountpoint" && unmount_ok=0 || true; }
+      if [ "$unmount_ok" != "0" ]; then
+        umount "$mountpoint" && unmount_ok=0 || true
+      fi
+      if [ "$unmount_ok" != "0" ] && command -v sudo >/dev/null 2>&1; then
+        sudo umount "$mountpoint" && unmount_ok=0 || true
+      fi
       ;;
     *)
       umount "$mountpoint" && unmount_ok=0 || true
       ;;
   esac
 
-  if [ "$unmount_ok" = "0" ]; then
-    log "${GREEN}[ok]${NC} Gateway stopped, filesystem synced, and USB unmounted: $mountpoint"
+  if [ "$unmount_ok" = "0" ] && verify_unmounted "$mountpoint"; then
+    log "${GREEN}[ok]${NC} USB unmounted: $mountpoint"
+    poweroff_or_eject_usb "$mountpoint" "${device:-}"
+    log "${GREEN}[ok]${NC} Gateway stopped and filesystem cleanup completed."
     return 0
   fi
 
