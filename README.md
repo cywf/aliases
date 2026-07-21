@@ -1,4 +1,4 @@
-# My on-the-go toolkit 
+# My on-the-go toolkit
 
 This repo is meant to be a quick setup kit for terminal users and sys/net admin related work.
 Feel free to fork or create a PR to contribute!
@@ -8,6 +8,7 @@ Feel free to fork or create a PR to contribute!
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [Aliases](#aliases)
+- [Portable Hermes USB](#portable-hermes-usb)
 - [Installation Scripts](#installation-scripts)
 - [Networking](#networking)
 - [System Administration](#system-administration)
@@ -30,6 +31,7 @@ This repository provides a comprehensive toolkit for system administrators, netw
 The toolkit is organized into several directories, each focusing on a specific domain:
 
 - **Aliases**: Bash shortcuts for common commands
+- **Portable Hermes USB**: locate, verify, bootstrap, and launch a USB-hosted Local-Hermes-Portable install
 - **Installation Scripts**: Automated setup scripts for various tools
 - **Networking**: Configuration examples and documentation
 - **System Administration**: Tools for system management
@@ -99,6 +101,8 @@ The `.bash_aliases` file contains useful shortcuts for:
 - **Docker**: Docker and docker-compose shortcuts
 - **TMUX**: Terminal multiplexer session management
 - **ZeroTier**: VPN network management
+- **Portable Hermes**: `sentinel`, `hermes-usb`, and `hermesusb` helpers for the preloaded Samsung BAR Plus drive
+- **AI automation**: opt-in `automode` wrapper controlled by `AUTOMODE_CMD`
 
 ### Installing Aliases
 
@@ -109,6 +113,37 @@ cp bash_aliases ~/.bash_aliases
 # Reload your bash configuration
 source ~/.bashrc
 ```
+
+## Portable Hermes USB
+
+The portable Hermes workflow is built for the Samsung BAR Plus 128GB USB 3.1 flash drive that is already preloaded with Hermes configuration. The helper locates a mounted `Local-Hermes-Portable` checkout, verifies the portable launcher, prints the `SENTINEL ONLINE` / `Welcome Back Sir` banner, can optionally send a Telegram health report, and launches portable Hermes.
+
+Primary commands after sourcing `bash_aliases`:
+
+```bash
+sentinel --verify-only      # locate and verify without launching
+sentinel                    # locate, verify, and launch portable Hermes
+hermes-usb --launcher       # run linux.sh/mac.sh instead of hermes/launch.sh
+```
+
+Useful overrides:
+
+```bash
+export ALIASES_REPO="$HOME/code/aliases"
+HERMES_PORTABLE_ROOT="/media/$USER/BAR PLUS/Local-Hermes-Portable" sentinel --verify-only
+HERMES_USB_TARGET="/media/$USER/BAR PLUS" hermes-usb --verify-only
+HERMES_USB_NOTIFY=0 sentinel
+```
+
+Direct script usage:
+
+```bash
+install-scripts/hermes-portable-usb.sh --find-only
+install-scripts/hermes-portable-usb.sh --verify-only
+install-scripts/hermes-portable-usb.sh --no-bootstrap --verify-only
+```
+
+See [`install-scripts/README.md`](install-scripts/README.md#hermes-portable-usbsh) for full options, environment variables, and Telegram notification details.
 
 ## Installation Scripts
 
@@ -142,6 +177,7 @@ Located in `install-scripts/`, these scripts automate the installation and confi
 - **minecraft-install.sh** - Set up Minecraft server with Docker & ZeroTier
 - **autogpt-install.sh** - Install AutoGPT
 - **whisper.sh** - Install OpenAI Whisper
+- **hermes-portable-usb.sh** - Locate, verify, bootstrap, and launch Local-Hermes-Portable from a USB drive
 
 ### Radio & SDR
 - **rtl-sdr.sh** - Complete RTL-SDR setup with multiple SDR tools
@@ -296,8 +332,8 @@ cd install-scripts
 chmod +x wazuh_wizard.sh
 ./wazuh_wizard.sh
 
-# Disable unnecessary services for security
-sudo sysadmin/disable-services.md
+# Review the service-hardening guide
+less sysadmin/disable-services.md
 
 # Install Wireshark for network analysis
 chmod +x wireshark-install.sh
@@ -433,11 +469,10 @@ docker --version
 
 ### Firewall Configuration
 
-```bash
-# Configure UFW rules
-./networking/ufw-setup.sh
+Review the tracked firewall examples before applying rules:
 
-# Check firewall status
+```bash
+less networking/ufw-rules.md
 sudo ufw status
 ```
 
@@ -456,6 +491,11 @@ sudo ufw status
 3. **Script Execution Issues**
    - Verify script permissions with `chmod +x`
    - Check script syntax with `bash -n`
+
+4. **Portable Hermes USB Not Detected**
+   - Confirm the Samsung BAR Plus drive is mounted and visible with `lsblk` or your file manager
+   - Run `sentinel --find-only` or `install-scripts/hermes-portable-usb.sh --find-only`
+   - Set `HERMES_PORTABLE_ROOT` to the exact `Local-Hermes-Portable` path, or `HERMES_USB_TARGET` to the USB mount root
 
 ### Getting Help
 
